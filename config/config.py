@@ -159,13 +159,13 @@ WORKSPACE_CONFIG["schedule_export_csv"] = _get_env(
 
 
 DS_CONFIG = {
-    "base_url": _get_env("DS_BASE_URL", ""),
+    "base_url": _get_env("DS_BASE_URL", "http://172.20.0.235:12345/dolphinscheduler"),
     "token": _get_env("DS_TOKEN", ""),
-    "project_code": _get_env("DS_PROJECT_CODE", ""),
-    "fuyan_project_code": _get_env("DS_FUYAN_PROJECT_CODE", ""),
-    "environment_code": _get_env("DS_ENVIRONMENT_CODE", ""),
-    "tenant_code": _get_env("DS_TENANT_CODE", ""),
-    "fuyan_project_name": _get_env("DS_FUYAN_PROJECT_NAME", ""),
+    "project_code": _get_env("DS_PROJECT_CODE", "158514956085248"),
+    "fuyan_project_code": _get_env("DS_FUYAN_PROJECT_CODE", "158515019231232"),
+    "environment_code": _get_env("DS_ENVIRONMENT_CODE", "154818922491872"),
+    "tenant_code": _get_env("DS_TENANT_CODE", "dolphinscheduler"),
+    "fuyan_project_name": _get_env("DS_FUYAN_PROJECT_NAME", "国内数仓-质量校验"),
     "api_mode": _get_env("DS_API_MODE", "process_v2"),
     "start_endpoint": _get_env("DS_START_ENDPOINT", "start-process-instance"),
     "start_code_field": _get_env("DS_START_CODE_FIELD", "processDefinitionCode"),
@@ -175,16 +175,16 @@ DS_CONFIG = {
 
 
 TV_CONFIG = {
-    "api_url": _get_env("TV_API_URL", ""),
-    "bot_id": _get_env("TV_BOT_ID", ""),
+    "api_url": _get_env("TV_API_URL", "https://tv-service-alert.kuainiu.chat/alert/v2/array"),
+    "bot_id": _get_env("TV_BOT_ID", "fbbcabb4-d187-4d9e-8e1e-ba7654a24d1c"),
     "app_id": _get_env("TV_APP_ID", "alert"),
 }
 
 
 DB_CONFIG = {
-    "host": _get_env("DB_HOST", ""),
-    "port": int(_get_env("DB_PORT", "3306")),
-    "user": _get_env("DB_USER", ""),
+    "host": _get_env("DB_HOST", "172.20.0.235"),
+    "port": int(_get_env("DB_PORT", "13306")),
+    "user": _get_env("DB_USER", "e_ds"),
     "password": _get_env("DB_PASSWORD", ""),
     "database": _get_env("DB_NAME", "wattrel"),
     "charset": "utf8mb4",
@@ -192,8 +192,8 @@ DB_CONFIG = {
 
 
 OPENCLAW_CONFIG = {
-    "webhook": _get_env("OPENCLAW_WEBHOOK", ""),
-    "token": _get_env("OPENCLAW_HOOK_TOKEN", ""),
+    "webhook": _get_env("OPENCLAW_WEBHOOK", "http://127.0.0.1:18789/hooks/wattrel/wake"),
+    "token": _get_env("OPENCLAW_HOOK_TOKEN", "wattrel-webhook-secret-token-2026"),
 }
 
 
@@ -211,16 +211,22 @@ QUALITY_RULE_AI_DEFAULTS = {
     "api_key": "",
     "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     "model": "qwen3.6-plus",
-    "langfuse_secret_key": "",
-    "langfuse_public_key": "",
-    "langfuse_base_url": "",
+    "langfuse_secret_key": "sk-lf-fbde8223-da9e-4869-9d88-ba919e45f604",
+    "langfuse_public_key": "pk-lf-586c391a-f4f9-4356-92f5-97100828e72c",
+    "langfuse_base_url": "https://langfuse.kuainiu.io",
 }
 
 
 QUALITY_RULE_FORM_CONFIG = {
     "country": _get_env("QUALITY_RULE_FORM_COUNTRY", "ph"),
-    "view_url": _get_env("QUALITY_RULE_FORM_VIEW_URL", ""),
-    "post_url": _get_env("QUALITY_RULE_FORM_POST_URL", ""),
+    "view_url": _get_env(
+        "QUALITY_RULE_FORM_VIEW_URL",
+        "https://docs.google.com/forms/d/e/1FAIpQLScRS0T5w9B0BOmXl88uhVDeLOjfrMbpS3KWFNgG_nLK9SwV5w/viewform?usp=publish-editor",
+    ),
+    "post_url": _get_env(
+        "QUALITY_RULE_FORM_POST_URL",
+        "https://docs.google.com/forms/d/e/1FAIpQLScRS0T5w9B0BOmXl88uhVDeLOjfrMbpS3KWFNgG_nLK9SwV5w/formResponse",
+    ),
     "field_map": json.loads(
         _get_env(
             "QUALITY_RULE_FORM_FIELD_MAP_JSON",
@@ -247,19 +253,19 @@ QUALITY_RULE_FORM_CONFIG = {
     ),
     "confirmation_export_url": _get_env(
         "QUALITY_RULE_CONFIRMATION_EXPORT_URL",
-        "",
+        "https://docs.google.com/spreadsheets/d/1nzjXSrMqg0_sXd2V7JpBWl2xZyNrQC25X8WK50mNP9g/export?format=csv&gid=683783947",
     ),
     "confirmation_sheet_url": _get_env(
         "QUALITY_RULE_CONFIRMATION_SHEET_URL",
-        "",
+        "https://docs.google.com/spreadsheets/d/1nzjXSrMqg0_sXd2V7JpBWl2xZyNrQC25X8WK50mNP9g/edit?resourcekey=&gid=683783947#gid=683783947",
     ),
     "confirmation_spreadsheet_id": _get_env(
         "QUALITY_RULE_CONFIRMATION_SPREADSHEET_ID",
-        "",
+        "1nzjXSrMqg0_sXd2V7JpBWl2xZyNrQC25X8WK50mNP9g",
     ),
     "confirmation_sheet_gid": _get_env(
         "QUALITY_RULE_CONFIRMATION_SHEET_GID",
-        "",
+        "683783947",
     ),
     "confirmation_google_service_account_json": _get_env(
         "QUALITY_RULE_CONFIRMATION_GOOGLE_SERVICE_ACCOUNT_JSON",
@@ -277,6 +283,7 @@ QUALITY_RULE_FORM_CONFIG = {
                     "country": "国家",
                     "database": "数据库",
                     "tbl": "表名",
+                    "auto_generate": "是否需要自动生成",
                     "need_apply": "是否上线",
                     "metric_field": "需要校验的内容字段",
                     "candidate_key": "唯一键",
@@ -291,7 +298,7 @@ QUALITY_RULE_FORM_CONFIG = {
             ),
         )
     ),
-    "notify_bot_id": _get_env("QUALITY_RULE_NOTIFY_BOT_ID", ""),
+    "notify_bot_id": _get_env("QUALITY_RULE_NOTIFY_BOT_ID", "08826b39-e6eb-44fb-9c25-9778a8171f49"),
     "notify_mentions": [
         item.strip()
         for item in _get_env("QUALITY_RULE_NOTIFY_MENTIONS", "").split(",")
@@ -328,8 +335,11 @@ QUALITY_RULE_VALIDATION_CONFIG = {
     "max_ai_retries": int(_get_env("QUALITY_RULE_VALIDATION_MAX_AI_RETRIES", "1")),
     "window_hours": int(_get_env("QUALITY_RULE_VALIDATION_WINDOW_HOURS", "24")),
     "backend": _get_env("QUALITY_RULE_VALIDATION_BACKEND", "sr_gateway"),
-    "sr_base_url": _get_env("QUALITY_RULE_SR_BASE_URL", _get_env("FUXI_BASE_URL", "")),
-    "sr_token": _get_env("QUALITY_RULE_SR_TOKEN", _get_env("FUXI_API_TOKEN", "")),
+    "sr_base_url": _get_env("QUALITY_RULE_SR_BASE_URL", _get_env("FUXI_BASE_URL", "https://sr-box.kuainiu.io")),
+    "sr_token": _get_env(
+        "QUALITY_RULE_SR_TOKEN",
+        _get_env("FUXI_API_TOKEN", "fuxi_backend_query_all_20260518"),
+    ),
     "sr_access_mode": _get_env("QUALITY_RULE_SR_ACCESS_MODE", "local"),
     "sr_timeout_sec": int(_get_env("QUALITY_RULE_SR_TIMEOUT_SEC", "60")),
 }
