@@ -391,6 +391,25 @@ def build_detection_form_payload(backlog_item, submitter="codex", cluster_or_env
     }
 
 
+def build_disable_auto_generate_form_payload(item, submitter="codex", cluster_or_env="wattrel"):
+    payload = {
+        "submission_type": "detected",
+        "candidate_key": item.get("candidate_key", ""),
+        "submitter": submitter,
+        "country": item.get("country") or QUALITY_RULE_FORM_CONFIG.get("country", "ph"),
+        "cluster_or_env": cluster_or_env,
+        "database": item.get("database", ""),
+        "tbl": item.get("dest_tbl") or item.get("tbl", ""),
+        "need_apply": "0",
+        "src_sql": item.get("src_sql", ""),
+        "dest_sql": item.get("dest_sql", ""),
+        "human_check": "1",
+        "auto_generate": "0",
+        "notes": item.get("reason", ""),
+    }
+    return payload
+
+
 def submit_backlog_items_to_form(backlog_items, form_config=None, dry_run=False):
     form_config = form_config or QUALITY_RULE_FORM_CONFIG
     view_url = form_config.get("view_url")
@@ -413,6 +432,34 @@ def submit_backlog_items_to_form(backlog_items, form_config=None, dry_run=False)
             dry_run=dry_run,
         )
         result["candidate_key"] = item["candidate_key"]
+        results.append(result)
+        if result.get("ok"):
+            submitted += 1
+    return {"submitted": submitted, "results": results, "skipped": False}
+
+
+def submit_disable_auto_generate_items_to_form(items, form_config=None, dry_run=False):
+    form_config = form_config or QUALITY_RULE_FORM_CONFIG
+    view_url = form_config.get("view_url")
+    post_url = form_config.get("post_url")
+    field_map = form_config.get("field_map") or {}
+    required_fields = form_config.get("required_fields") or []
+    if not view_url or not post_url or not field_map:
+        return {"submitted": 0, "results": [], "skipped": True, "reason": "form_config_incomplete"}
+
+    results = []
+    submitted = 0
+    for item in items:
+        payload = build_disable_auto_generate_form_payload(item)
+        result = submit_google_form(
+            view_url,
+            post_url,
+            field_map,
+            payload,
+            required_fields=required_fields,
+            dry_run=dry_run,
+        )
+        result["candidate_key"] = item.get("candidate_key", "")
         results.append(result)
         if result.get("ok"):
             submitted += 1
@@ -599,6 +646,12 @@ def extract_sheet_row_number(row):
     return None
 
 
+def build_confirmation_row_sort_key(row):
+    row_number = extract_sheet_row_number(row) or 0
+    submitted_at = (row.get("submitted_at") or "").strip()
+    return (row_number, submitted_at)
+
+
 def build_decision_signature(row):
     candidate_key = infer_candidate_key_from_row(row)
     submitted_at = (row.get("submitted_at") or "").strip()
@@ -770,8 +823,7 @@ def latest_decisions_by_candidate(rows):
             continue
         row["candidate_key"] = key
         current = decisions.get(key)
-        submitted_at = row.get("submitted_at", "")
-        if current is None or submitted_at >= current.get("submitted_at", ""):
+        if current is None or build_confirmation_row_sort_key(row) >= build_confirmation_row_sort_key(current):
             decisions[key] = row
     return decisions
 
@@ -789,8 +841,7 @@ def find_latest_requested_metric_field(rows, database, tbl):
             continue
         if row_database != database or row_tbl != tbl:
             continue
-        submitted_at = (row.get("submitted_at") or "").strip()
-        if latest_row is None or submitted_at >= (latest_row.get("submitted_at") or ""):
+        if latest_row is None or build_confirmation_row_sort_key(row) >= build_confirmation_row_sort_key(latest_row):
             latest_row = row
     if latest_row is None:
         return ""
@@ -812,10 +863,40 @@ def find_latest_confirmation_row(rows, database, tbl, country=""):
             continue
         if country and row_country != country:
             continue
-        submitted_at = (row.get("submitted_at") or "").strip()
-        if latest_row is None or submitted_at >= (latest_row.get("submitted_at") or ""):
+        if latest_row is None or build_confirmation_row_sort_key(row) >= build_confirmation_row_sort_key(latest_row):
             latest_row = row
     return latest_row
+
+
+def find_latest_generation_request_row(rows, database, tbl, country=""):
+    database = (database or "").strip().lower() or infer_database_from_table_name(tbl, country=country)
+    tbl = (tbl or "").strip()
+    country = (country or "").strip().lower()
+
+    latest_blank_request_row = None
+    latest_any_row = None
+    for row in rows:
+        row_country = str(
+            row.get("country") or QUALITY_RULE_FORM_CONFIG.get("country", "ph")
+        ).strip().lower()
+        row_database = infer_database_from_row(row, country=row_country or country)
+        row_tbl = (row.get("tbl") or row.get("dest_tbl") or "").strip()
+        if row_database != database or row_tbl != tbl:
+            continue
+        if country and row_country != country:
+            continue
+
+        if latest_any_row is None or build_confirmation_row_sort_key(row) >= build_confirmation_row_sort_key(latest_any_row):
+            latest_any_row = row
+
+        if not auto_generate_is_enabled(row.get("auto_generate")):
+            continue
+        if confirmation_row_has_submittable_sql(row):
+            continue
+        if latest_blank_request_row is None or build_confirmation_row_sort_key(row) >= build_confirmation_row_sort_key(latest_blank_request_row):
+            latest_blank_request_row = row
+
+    return latest_blank_request_row or latest_any_row
 
 
 def confirmation_row_has_submittable_sql(row):
@@ -832,6 +913,18 @@ def confirmation_row_has_submittable_sql(row):
     if rule_name == "cnt":
         return bool(src_sql and dest_sql)
     return bool(src_sql or dest_sql)
+
+
+def confirmation_row_disables_auto_generation(row):
+    if not row:
+        return False
+    auto_generate = (row.get("auto_generate") or "").strip()
+    if auto_generate and not auto_generate_is_enabled(auto_generate):
+        return True
+    need_apply = (row.get("need_apply") or "").strip()
+    if need_apply and not need_apply_is_enabled(need_apply):
+        return True
+    return False
 
 
 def update_backlog_with_decisions(backlog, decision_rows):

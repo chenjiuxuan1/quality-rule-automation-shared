@@ -582,6 +582,35 @@ class QualityRuleConfirmationTests(unittest.TestCase):
 
         self.assertEqual(result, "dwb")
 
+    def test_find_latest_generation_request_row_prefers_latest_blank_manual_row(self):
+        module, _ = load_module()
+        rows = [
+            {
+                "country": "th",
+                "database": "ads",
+                "tbl": "ads_demo",
+                "auto_generate": "1",
+                "dest_sql": "select 1",
+                "sheet_row_number": 20,
+                "submitted_at": "2026-06-09 18:00:00",
+            },
+            {
+                "country": "th",
+                "database": "ads",
+                "tbl": "ads_demo",
+                "auto_generate": "1",
+                "dest_sql": "",
+                "src_sql": "",
+                "sheet_row_number": 35,
+                "submitted_at": "2026-06-10 18:00:00",
+            },
+        ]
+
+        result = module.find_latest_generation_request_row(rows, "ads", "ads_demo", country="th")
+
+        self.assertEqual(result["sheet_row_number"], 35)
+        self.assertEqual(result["dest_sql"], "")
+
     def test_build_form_payload_requires_candidate_key(self):
         module, _ = load_module()
 
@@ -591,6 +620,34 @@ class QualityRuleConfirmationTests(unittest.TestCase):
                 module.QUALITY_RULE_FORM_CONFIG["field_map"],
                 required_fields=module.QUALITY_RULE_FORM_CONFIG["required_fields"],
             )
+
+    def test_build_disable_auto_generate_form_payload_marks_need_apply_zero(self):
+        module, _ = load_module()
+
+        payload = module.build_disable_auto_generate_form_payload(
+            {
+                "candidate_key": "dwd::dwd.dwd_user_member_log::cnt",
+                "country": "ph",
+                "database": "dwd",
+                "dest_tbl": "dwd_user_member_log",
+                "src_sql": "select 1",
+                "dest_sql": "select 2",
+                "reason": "已有规则",
+            }
+        )
+
+        self.assertEqual(payload["need_apply"], "0")
+        self.assertEqual(payload["human_check"], "1")
+        self.assertEqual(payload["auto_generate"], "0")
+
+    def test_confirmation_row_disables_auto_generation_for_need_apply_zero(self):
+        module, _ = load_module()
+
+        self.assertTrue(
+            module.confirmation_row_disables_auto_generation(
+                {"need_apply": "0", "auto_generate": ""}
+            )
+        )
 
     def test_update_backlog_with_need_apply_zero_marks_item_rejected(self):
         module, _ = load_module()

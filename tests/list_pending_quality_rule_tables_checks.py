@@ -28,7 +28,9 @@ def load_module():
     fake_confirmation.fetch_confirmation_csv = mock.MagicMock(return_value="")
     fake_confirmation.parse_confirmation_rows = mock.MagicMock(return_value=[])
     fake_confirmation.find_latest_confirmation_row = mock.MagicMock(return_value=None)
+    fake_confirmation.find_latest_generation_request_row = mock.MagicMock(return_value=None)
     fake_confirmation.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
+    fake_confirmation.confirmation_row_disables_auto_generation = mock.MagicMock(return_value=False)
     fake_confirmation.infer_database_from_row = mock.MagicMock(
         side_effect=lambda row, country="": (row.get("database") or "").strip()
     )
@@ -73,7 +75,7 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
             {"country": "ph", "database": "dwd", "tbl": "dwd_user_phone_md5", "submitted_at": "2026-06-09 18:00:00"}
         ]
         existing_row = confirmation_rows[0]
-        module.find_latest_confirmation_row = mock.MagicMock(
+        module.find_latest_generation_request_row = mock.MagicMock(
             side_effect=[
                 existing_row,
                 None,
@@ -104,7 +106,7 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
             "dest_sql": "",
             "submitted_at": "2026-06-09 18:00:00",
         }
-        module.find_latest_confirmation_row = mock.MagicMock(return_value=existing_row)
+        module.find_latest_generation_request_row = mock.MagicMock(return_value=existing_row)
         module.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
 
         results = module.filter_existing_confirmation_rows(
@@ -113,6 +115,29 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
         )
 
         self.assertEqual(results, [{"database": "dwd", "tbl": "dwd_user_phone_md5"}])
+
+    def test_filter_existing_confirmation_rows_skips_auto_generate_disabled_row(self):
+        module = load_module()
+        existing_row = {
+            "country": "ph",
+            "database": "dwd",
+            "tbl": "dwd_user_phone_md5",
+            "auto_generate": "0",
+            "need_apply": "0",
+            "src_sql": "",
+            "dest_sql": "",
+            "submitted_at": "2026-06-09 18:00:00",
+        }
+        module.find_latest_generation_request_row = mock.MagicMock(return_value=existing_row)
+        module.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
+        module.confirmation_row_disables_auto_generation = mock.MagicMock(return_value=True)
+
+        results = module.filter_existing_confirmation_rows(
+            [{"database": "dwd", "tbl": "dwd_user_phone_md5"}],
+            [existing_row],
+        )
+
+        self.assertEqual(results, [])
 
     def test_extract_manual_pending_rows_includes_hand_filled_generation_requests(self):
         module = load_module()
@@ -197,7 +222,7 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
                 {"country": "ph", "database": "dwd", "tbl": "dwd_user_phone_md5", "submitted_at": "2026-06-09 18:00:00"}
             ]
         )
-        module.find_latest_confirmation_row = mock.MagicMock(
+        module.find_latest_generation_request_row = mock.MagicMock(
             side_effect=[
                 {"country": "ph", "database": "dwd", "tbl": "dwd_user_phone_md5", "submitted_at": "2026-06-09 18:00:00"},
                 None,
@@ -248,7 +273,7 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
             ]
         )
         module.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
-        module.find_latest_confirmation_row = mock.MagicMock(return_value=None)
+        module.find_latest_generation_request_row = mock.MagicMock(return_value=None)
 
         argv_backup = sys.argv
         stdout_backup = sys.stdout
@@ -280,6 +305,27 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
                 }
             ],
         )
+
+    def test_filter_existing_confirmation_rows_keeps_item_when_latest_manual_row_is_blank(self):
+        module = load_module()
+        blank_row = {
+            "country": "th",
+            "database": "ads",
+            "tbl": "ads_demo",
+            "auto_generate": "1",
+            "src_sql": "",
+            "dest_sql": "",
+            "sheet_row_number": 35,
+        }
+        module.find_latest_generation_request_row = mock.MagicMock(return_value=blank_row)
+        module.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
+
+        results = module.filter_existing_confirmation_rows(
+            [{"database": "ads", "tbl": "ads_demo"}],
+            [blank_row],
+        )
+
+        self.assertEqual(results, [{"database": "ads", "tbl": "ads_demo"}])
 
 
 if __name__ == "__main__":
