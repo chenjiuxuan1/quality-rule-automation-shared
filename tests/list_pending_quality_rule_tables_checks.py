@@ -29,6 +29,9 @@ def load_module():
     fake_confirmation.parse_confirmation_rows = mock.MagicMock(return_value=[])
     fake_confirmation.find_latest_confirmation_row = mock.MagicMock(return_value=None)
     fake_confirmation.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
+    fake_confirmation.infer_database_from_row = mock.MagicMock(
+        side_effect=lambda row, country="": (row.get("database") or "").strip()
+    )
     fake_confirmation.auto_generate_is_enabled = mock.MagicMock(
         side_effect=lambda value: str(value).strip().lower() in {"1", "true", "yes"}
     )
@@ -143,6 +146,36 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
                 {
                     "database": "ads",
                     "tbl": "ads_demo",
+                    "status": "pending_generation",
+                    "reason": "Google 确认表手动录入，待自动生成",
+                    "source": "confirmation_sheet",
+                }
+            ],
+        )
+
+    def test_extract_manual_pending_rows_infers_database_when_sheet_leaves_it_blank(self):
+        module = load_module()
+        confirmation_rows = [
+            {
+                "country": "th",
+                "database": "",
+                "tbl": "dwb_user_mob",
+                "auto_generate": "1",
+                "src_sql": "",
+                "dest_sql": "",
+            }
+        ]
+        module.infer_database_from_row = mock.MagicMock(return_value="dwb")
+        module.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
+
+        results = module.extract_manual_pending_rows(confirmation_rows, "th")
+
+        self.assertEqual(
+            results,
+            [
+                {
+                    "database": "dwb",
+                    "tbl": "dwb_user_mob",
                     "status": "pending_generation",
                     "reason": "Google 确认表手动录入，待自动生成",
                     "source": "confirmation_sheet",
