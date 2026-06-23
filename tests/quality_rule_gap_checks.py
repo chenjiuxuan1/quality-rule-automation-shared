@@ -329,6 +329,38 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertIn("WHERE `created_at` >= '{begin}' AND `created_at` < '{end}'", src_sql)
         self.assertIn("FROM `ods`.`ods_ma_user_center_user_import_detail`", dest_sql)
 
+    def test_harmonize_count_rule_check_fields_prefers_dest_field_when_both_sides_have_it(self):
+        module = load_module()
+
+        src_field, dest_field, reason = module.harmonize_count_rule_check_fields(
+            {
+                "source_columns": ["asset_create_at", "asset_update_at"],
+                "dest_columns": ["asset_create_at", "etl_create_time"],
+            },
+            "asset_update_at",
+            "asset_create_at",
+        )
+
+        self.assertEqual(src_field, "asset_create_at")
+        self.assertEqual(dest_field, "asset_create_at")
+        self.assertIn("asset_create_at", reason)
+
+    def test_harmonize_count_rule_check_fields_reports_unresolvable_mismatch(self):
+        module = load_module()
+
+        src_field, dest_field, reason = module.harmonize_count_rule_check_fields(
+            {
+                "source_columns": ["asset_update_at"],
+                "dest_columns": ["asset_create_at"],
+            },
+            "asset_update_at",
+            "asset_create_at",
+        )
+
+        self.assertEqual(src_field, "asset_update_at")
+        self.assertEqual(dest_field, "asset_create_at")
+        self.assertIn("无法统一", reason)
+
     def test_build_count_rule_candidate_blocks_when_check_fields_differ(self):
         module = load_module()
         table = {
@@ -352,9 +384,36 @@ class QualityRuleGapScannerTests(unittest.TestCase):
             result = module.build_count_rule_candidate("dwd", table, {}, ods_table_by_dest)
 
         self.assertEqual(result["status"], "blocked")
-        self.assertEqual(result["validation_status"], "not_validated")
-        self.assertIn("src_check_field 和 dest_check_field 必须一致", result["reason"])
+        self.assertIn("无法统一", result["reason"])
         mocked_validate.assert_not_called()
+
+    def test_build_count_rule_candidate_harmonizes_to_shared_create_field(self):
+        module = load_module()
+        table = {
+            "id": 1,
+            "db": "dwd",
+            "tbl": "dwd_asset_main",
+            "dep_tbls": json.dumps(["dwb_r2_asset"]),
+            "increment_field": "asset_create_at",
+            "check_field": "asset_create_at",
+            "dest_columns": ["asset_create_at", "etl_create_time"],
+        }
+        ods_table_by_dest = {
+            "dwb_r2_asset": {
+                "dest_tbl": "dwb_r2_asset",
+                "check_field": "asset_update_at",
+                "columns": json.dumps(["asset_create_at", "asset_update_at", "asset_id"]),
+                "src_tbl": "r2_asset",
+            }
+        }
+
+        result = module.build_count_rule_candidate("dwd", table, {}, ods_table_by_dest)
+
+        self.assertEqual(result["status"], "candidate")
+        self.assertEqual(result["candidate"]["src_check_field"], "asset_create_at")
+        self.assertEqual(result["candidate"]["dest_check_field"], "asset_create_at")
+        self.assertIn("`asset_create_at` >= '{begin}'", result["candidate"]["src_sql"])
+        self.assertIn("`asset_create_at` >= '{begin}'", result["candidate"]["dest_sql"])
 
     def test_build_count_rule_candidate_escalates_fast_path_when_dest_falls_back_to_etl_time(self):
         module = load_module()
@@ -397,7 +456,7 @@ class QualityRuleGapScannerTests(unittest.TestCase):
                 result = module.build_count_rule_candidate("dwd_sec", table, {}, ods_table_by_dest)
 
         self.assertEqual(result["status"], "candidate")
-        self.assertIn("目标侧 ETL 时间字段", mocked_ai.call_args.args[2])
+        self.assertIn("无法统一", mocked_ai.call_args.args[2])
         mocked_finalize.assert_called_once()
 
     def test_build_count_rule_candidate_keeps_ai_draft_sql_in_blocked_result(self):
@@ -598,6 +657,32 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
         self.assertIn("'2026-06-16 00:00:00'", rendered)
         self.assertIn("'2026-06-17 00:00:00'", rendered)
 
+    def test_extract_window_check_field_from_sql_returns_shared_window_field(self):
+        module = load_module()
+
+        field = module.extract_window_check_field_from_sql(
+            "SELECT COUNT(*) AS cnt FROM `hive`.`dwb_paimon`.`dwb_r2_asset` "
+            "WHERE `asset_update_at` >= '{begin}' AND `asset_update_at` < '{end}'"
+        )
+
+        self.assertEqual(field, "asset_update_at")
+
+    def test_sanitize_candidate_sql_templates_syncs_check_fields_from_sql_body(self):
+        module = load_module()
+
+        sanitized = module.sanitize_candidate_sql_templates(
+            {
+                "src_sql": "SELECT COUNT(*) AS cnt FROM `hive`.`dwb_paimon`.`dwb_r2_asset` WHERE `asset_update_at` >= '{begin}' AND `asset_update_at` < '{end}'",
+                "dest_sql": "SELECT COUNT(*) AS cnt FROM `dwd`.`dwd_asset_main` WHERE `asset_create_at` >= '{begin}' AND `asset_create_at` < '{end}'",
+                "src_check_field": "create_at",
+                "dest_check_field": "create_at",
+            }
+        )
+
+        self.assertEqual(sanitized["src_check_field"], "asset_update_at")
+        self.assertEqual(sanitized["dest_check_field"], "asset_create_at")
+        self.assertEqual(sanitized["check_field"], "asset_create_at")
+
     def test_validate_candidates_for_apply_uses_db_syntax_check_even_when_backend_is_sr_gateway(self):
         fake_cursor = FakeCursor([])
         fake_conn = FakeConnection(fake_cursor)
@@ -625,7 +710,7 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
         self.assertTrue(fake_cursor.executed[1][0].lstrip().startswith("EXPLAIN SELECT COUNT(*)"))
 
     def test_finalize_candidate_with_validation_retries_ai_once_on_mismatch(self):
-        fake_cursor = FakeCursor([[{"cnt": 3}], [{"cnt": 5}], [{"cnt": 3}], [{"cnt": 3}]])
+        fake_cursor = FakeCursor([[], [], [{"cnt": 3}], [{"cnt": 5}], [], [], [{"cnt": 3}], [{"cnt": 3}]])
         fake_conn = FakeConnection(fake_cursor)
         module = load_module(fake_get_db_connection=mock.MagicMock(return_value=fake_conn))
         working_table = {
@@ -698,6 +783,112 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
         self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["validation_status"], "not_validated")
         self.assertIn("src_check_field 和 dest_check_field 必须一致", result["reason"])
+        mocked_validate.assert_not_called()
+
+    def test_finalize_candidate_with_validation_blocks_when_explain_fails(self):
+        module = load_module()
+        candidate = {
+            "name": "cnt",
+            "src_db": "ods",
+            "src_tbl": "ods_repay_cpop_income_item",
+            "dest_db": "dwd_sec",
+            "dest_tbl": "dwd_cst_pay_cost_detail",
+            "src_sql": "SELECT COUNT(*) AS cnt FROM ods.ods_repay_cpop_income_item WHERE create_at >= '{begin}' AND create_at < '{end}'",
+            "dest_sql": "SELECT COUNT(*) AS cnt FROM dwd_sec.dwd_cst_pay_cost_detail WHERE create_at >= '{begin}' AND create_at < '{end}'",
+            "src_check_field": "create_at",
+            "dest_check_field": "create_at",
+        }
+
+        with mock.patch.object(
+            module,
+            "validate_candidate_sql_syntax",
+            return_value={
+                "ok": False,
+                "reason": "SQL 语法校验失败: explain failed",
+                "validation_status": "syntax_failed",
+                "validation_error": "explain failed",
+                "validation_window_begin": "2026-06-22 00:00:00",
+                "validation_window_end": "2026-06-23 00:00:00",
+            },
+        ) as mocked_syntax, mock.patch.object(module, "validate_candidate_sql") as mocked_validate:
+            result = module.finalize_candidate_with_validation(
+                "dwd_sec",
+                "dwd_cst_pay_cost_detail",
+                "dwd_sec",
+                candidate,
+                {},
+            )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["validation_status"], "syntax_failed")
+        self.assertEqual(result["syntax_status"], "syntax_failed")
+        self.assertIn("SQL EXPLAIN 校验失败", result["reason"])
+        mocked_syntax.assert_called_once()
+        mocked_validate.assert_not_called()
+
+    def test_finalize_candidate_with_validation_blocks_when_sql_window_fields_differ(self):
+        module = load_module()
+        candidate = {
+            "name": "cnt",
+            "src_db": "hive.dwb_paimon",
+            "src_tbl": "dwb_r2_asset",
+            "dest_db": "dwd",
+            "dest_tbl": "dwd_asset_main",
+            "src_sql": "SELECT COUNT(*) AS cnt FROM `hive`.`dwb_paimon`.`dwb_r2_asset` WHERE `asset_update_at` >= '{begin}' AND `asset_update_at` < '{end}'",
+            "dest_sql": "SELECT COUNT(*) AS cnt FROM `dwd`.`dwd_asset_main` WHERE `asset_create_at` >= '{begin}' AND `asset_create_at` < '{end}'",
+            "src_check_field": "create_at",
+            "dest_check_field": "create_at",
+        }
+
+        with mock.patch.object(module, "validate_candidate_sql") as mocked_validate:
+            result = module.finalize_candidate_with_validation(
+                "dwd",
+                "dwd_asset_main",
+                "dwd",
+                candidate,
+                {},
+            )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["validation_status"], "not_validated")
+        self.assertEqual(result["src_check_field"], "asset_update_at")
+        self.assertEqual(result["check_field"], "asset_create_at")
+        self.assertIn("src_check_field 和 dest_check_field 必须一致", result["reason"])
+        mocked_validate.assert_not_called()
+
+    def test_finalize_candidate_with_validation_runs_explain_even_when_real_validation_disabled(self):
+        fake_cursor = FakeCursor([[], []])
+        module = load_module()
+        module.QUALITY_RULE_VALIDATION_CONFIG["enabled"] = False
+        candidate = {
+            "name": "cnt",
+            "src_db": "ods",
+            "src_tbl": "ods_repay_cpop_income_item",
+            "dest_db": "dwd_sec",
+            "dest_tbl": "dwd_cst_pay_cost_detail",
+            "src_sql": "SELECT COUNT(*) AS cnt FROM ods.ods_repay_cpop_income_item WHERE create_at >= '{begin}' AND create_at < '{end}'",
+            "dest_sql": "SELECT COUNT(*) AS cnt FROM dwd_sec.dwd_cst_pay_cost_detail WHERE create_at >= '{begin}' AND create_at < '{end}'",
+            "src_check_field": "create_at",
+            "dest_check_field": "create_at",
+        }
+
+        with mock.patch.object(module, "validate_candidate_sql") as mocked_validate:
+            result = module.finalize_candidate_with_validation(
+                "dwd_sec",
+                "dwd_cst_pay_cost_detail",
+                "dwd_sec",
+                candidate,
+                {},
+                cursor=fake_cursor,
+            )
+
+        self.assertEqual(result["status"], "candidate")
+        self.assertEqual(result["validation_status"], "skipped")
+        self.assertEqual(result["syntax_status"], "syntax_ok")
+        self.assertEqual(result["validation_reason"], "未启用真实校验")
+        self.assertEqual(len(fake_cursor.executed), 2)
+        self.assertTrue(fake_cursor.executed[0][0].lstrip().startswith("EXPLAIN SELECT COUNT(*)"))
+        self.assertTrue(fake_cursor.executed[1][0].lstrip().startswith("EXPLAIN SELECT COUNT(*)"))
         mocked_validate.assert_not_called()
 
     def test_build_count_rule_candidate_does_not_accept_cross_table_generic_source_etl_field(self):

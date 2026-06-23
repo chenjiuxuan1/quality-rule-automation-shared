@@ -380,6 +380,39 @@ def infer_target_check_field(table, git_roots=None):
     return git_hints.get("check_field")
 
 
+def _field_in_columns(field_name, columns):
+    normalized = str(field_name or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized in {str(column or "").strip().lower() for column in parse_json_list(columns)}
+
+
+def harmonize_count_rule_check_fields(table, src_check_field, dest_check_field):
+    src_field = str(src_check_field or "").strip()
+    dest_field = str(dest_check_field or "").strip()
+    if not src_field or not dest_field:
+        return src_check_field, dest_check_field, ""
+    if src_field.lower() == dest_field.lower():
+        return src_field, dest_field, ""
+
+    source_columns = table.get("source_columns") or table.get("columns")
+    dest_columns = table.get("dest_columns")
+
+    if _field_in_columns(dest_field, source_columns) and _field_in_columns(dest_field, dest_columns):
+        return dest_field, dest_field, (
+            f"自动将源/目标限制字段统一为 {dest_field}"
+        )
+
+    if _field_in_columns(src_field, source_columns) and _field_in_columns(src_field, dest_columns):
+        return src_field, src_field, (
+            f"自动将源/目标限制字段统一为 {src_field}"
+        )
+
+    return src_field, dest_field, (
+        f"源侧限制字段 {src_field} 与目标侧限制字段 {dest_field} 无法统一"
+    )
+
+
 def source_field_looks_unreliable_for_count_rule(table, src_check_field):
     if not src_check_field:
         return True
@@ -557,6 +590,14 @@ def quote_qualified_identifier(value):
 
 ALLOWED_SQL_TEMPLATE_PLACEHOLDERS = ("begin", "end")
 SQL_TEMPLATE_FIELDS = ("src_sql", "src_year_sql", "dest_sql", "dest_year_sql")
+WINDOW_BEGIN_PATTERN = re.compile(
+    r"(?P<field>`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)\s*>=\s*'?\{begin\}'?",
+    flags=re.IGNORECASE,
+)
+WINDOW_END_PATTERN = re.compile(
+    r"(?P<field>`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)\s*<\s*'?\{end\}'?",
+    flags=re.IGNORECASE,
+)
 
 
 def normalize_sql_template_braces(sql_text, allowed_placeholders=ALLOWED_SQL_TEMPLATE_PLACEHOLDERS):
@@ -582,11 +623,57 @@ def normalize_sql_template_braces(sql_text, allowed_placeholders=ALLOWED_SQL_TEM
     return text
 
 
+def _normalize_window_field_token(token):
+    value = str(token or "").strip()
+    if not value:
+        return ""
+    if value.startswith("`") and value.endswith("`"):
+        value = value[1:-1]
+    return value.replace("``", "`")
+
+
+def extract_window_check_field_from_sql(sql_text):
+    text = str(sql_text or "")
+    if not text:
+        return ""
+
+    begin_fields = {
+        _normalize_window_field_token(match.group("field"))
+        for match in WINDOW_BEGIN_PATTERN.finditer(text)
+        if _normalize_window_field_token(match.group("field"))
+    }
+    end_fields = {
+        _normalize_window_field_token(match.group("field"))
+        for match in WINDOW_END_PATTERN.finditer(text)
+        if _normalize_window_field_token(match.group("field"))
+    }
+    common = {field for field in begin_fields & end_fields if field}
+    if len(common) == 1:
+        return next(iter(common))
+    return ""
+
+
+def synchronize_candidate_check_fields_from_sql(candidate):
+    candidate = candidate or {}
+    synchronized = {}
+    src_field = extract_window_check_field_from_sql(candidate.get("src_sql", ""))
+    dest_field = extract_window_check_field_from_sql(candidate.get("dest_sql", ""))
+    if src_field:
+        synchronized["src_check_field"] = src_field
+    if dest_field:
+        synchronized["dest_check_field"] = dest_field
+        synchronized["check_field"] = dest_field
+    return synchronized
+
+
 def sanitize_candidate_sql_templates(candidate):
     sanitized = deepcopy(candidate or {})
     for field in SQL_TEMPLATE_FIELDS:
         if field in sanitized:
             sanitized[field] = normalize_sql_template_braces(sanitized.get(field, ""))
+    synchronized = synchronize_candidate_check_fields_from_sql(sanitized)
+    if synchronized:
+        sanitized.update(synchronized)
     return sanitized
 
 
@@ -1321,6 +1408,13 @@ def build_count_rule_candidate(
         dest_check_field = infer_target_check_field(working_table, git_roots=git_roots)
         if source_field_looks_unreliable_for_count_rule(working_table, src_check_field):
             src_check_field = None
+        harmonize_reason = ""
+        if src_check_field and dest_check_field:
+            src_check_field, dest_check_field, harmonize_reason = harmonize_count_rule_check_fields(
+                working_table,
+                src_check_field,
+                dest_check_field,
+            )
         if not src_check_field or not dest_check_field:
             ai_candidate, ai_meta = call_ai_candidate(
                 database_name,
@@ -1346,6 +1440,37 @@ def build_count_rule_candidate(
                 working_table.get("dest_db") or working_table.get("db"),
                 ai_meta,
                 "无法推断 src_check_field/dest_check_field",
+                fallback={"check_field": dest_check_field or ""},
+            )
+        if harmonize_reason and not count_rule_fields_are_consistent(src_check_field, dest_check_field):
+            ai_candidate, ai_meta = call_ai_candidate(
+                database_name,
+                {
+                    **working_table,
+                    "src_check_field": src_check_field,
+                    "dest_check_field": dest_check_field,
+                },
+                harmonize_reason,
+                git_roots=git_roots,
+            )
+            if ai_candidate:
+                return finalize_candidate_with_validation(
+                    database_name,
+                    target_table,
+                    ai_candidate.get("dest_db") or working_table.get("dest_db") or working_table.get("db"),
+                    ai_candidate,
+                    working_table,
+                    git_roots=git_roots,
+                    cursor=cursor,
+                    base_reason=f"AI 兜底生成规则: {ai_candidate.get('ai_reason', harmonize_reason)}",
+                    ai_status=ai_meta.get("status", ""),
+                )
+            return blocked_result_with_ai_draft(
+                working_table,
+                target_table,
+                working_table.get("dest_db") or working_table.get("db"),
+                ai_meta,
+                harmonize_reason,
                 fallback={"check_field": dest_check_field or ""},
             )
         needs_ai, needs_ai_reason = fast_path_count_rule_needs_ai(
@@ -1530,6 +1655,10 @@ def wrap_result_with_database(item, database_name, country=None):
 
 def blocked_result_with_candidate(database_name, target_table, target_db, candidate, validation_result, reason, country=None, ai_status=""):
     candidate = sanitize_candidate_sql_templates(candidate)
+    validation_status = validation_result.get("validation_status")
+    syntax_status = validation_result.get("syntax_status")
+    if not syntax_status and validation_status in {"syntax_failed", "syntax_ok"}:
+        syntax_status = validation_status
     result = {
         "status": "blocked",
         "rule_name": candidate.get("name", COUNT_RULE_NAME),
@@ -1539,6 +1668,8 @@ def blocked_result_with_candidate(database_name, target_table, target_db, candid
         "src_tbl": candidate.get("src_tbl", ""),
         "src_sql": candidate.get("src_sql", ""),
         "dest_sql": candidate.get("dest_sql", ""),
+        "src_check_field": candidate.get("src_check_field", ""),
+        "dest_check_field": candidate.get("dest_check_field", ""),
         "check_field": candidate.get("dest_check_field") or candidate.get("check_field") or "",
         "git_matches": candidate.get("git_matches", []),
         "reason": reason,
@@ -1551,6 +1682,11 @@ def blocked_result_with_candidate(database_name, target_table, target_db, candid
         "src_value": validation_result.get("src_value"),
         "dest_value": validation_result.get("dest_value"),
         "diff": validation_result.get("diff"),
+        "syntax_status": syntax_status,
+        "syntax_reason": validation_result.get("syntax_reason", validation_result.get("reason", "")),
+        "syntax_error": validation_result.get("syntax_error", validation_result.get("validation_error", "")),
+        "syntax_window_begin": validation_result.get("syntax_window_begin", validation_result.get("validation_window_begin")),
+        "syntax_window_end": validation_result.get("syntax_window_end", validation_result.get("validation_window_end")),
         "ai_status": ai_status or validation_result.get("ai_status", ""),
     }
     return wrap_result_with_database(result, database_name, country=country)
@@ -1626,13 +1762,51 @@ def finalize_candidate_with_validation(database_name, target_table, target_db, c
             country=country,
             ai_status=ai_status,
         )
+
+    own_conn = None
+    validation_cursor = cursor
+    if validation_backend() == "db" and validation_cursor is None:
+        own_conn = get_db_connection()
+        validation_cursor = own_conn.cursor()
+
+    try:
+        syntax_result = validate_candidate_sql_syntax(validation_cursor, candidate)
+    finally:
+        if own_conn is not None:
+            own_conn.close()
+            own_conn = None
+            validation_cursor = None
+
+    result.update(
+        {
+            "syntax_status": syntax_result.get("validation_status"),
+            "syntax_reason": syntax_result.get("reason", ""),
+            "syntax_error": syntax_result.get("validation_error", ""),
+            "syntax_window_begin": syntax_result.get("validation_window_begin"),
+            "syntax_window_end": syntax_result.get("validation_window_end"),
+        }
+    )
+    if not syntax_result.get("ok"):
+        validation_result = make_validation_result(
+            "syntax_failed",
+            syntax_result.get("reason", "SQL EXPLAIN 校验失败"),
+            validation_error=syntax_result.get("validation_error", ""),
+        )
+        return blocked_result_with_candidate(
+            database_name,
+            target_table,
+            target_db,
+            candidate,
+            validation_result,
+            f"{base_reason}; SQL EXPLAIN 校验失败，需人工确认: {syntax_result.get('reason', '')}",
+            country=country,
+            ai_status=ai_status,
+        )
     if not validation_enabled():
         result["validation_status"] = "skipped"
         result["validation_reason"] = "未启用真实校验"
         return result
 
-    own_conn = None
-    validation_cursor = cursor
     if validation_backend() == "db" and validation_cursor is None:
         own_conn = get_db_connection()
         validation_cursor = own_conn.cursor()
@@ -1683,7 +1857,15 @@ def finalize_candidate_with_validation(database_name, target_table, target_db, c
             own_retry_conn = get_db_connection()
             retry_cursor = own_retry_conn.cursor()
         try:
-            retry_validation = validate_candidate_sql(retry_cursor, retry_candidate)
+            retry_syntax = validate_candidate_sql_syntax(retry_cursor, retry_candidate)
+            if not retry_syntax.get("ok"):
+                retry_validation = make_validation_result(
+                    "syntax_failed",
+                    retry_syntax.get("reason", "SQL EXPLAIN 校验失败"),
+                    validation_error=retry_syntax.get("validation_error", ""),
+                )
+            else:
+                retry_validation = validate_candidate_sql(retry_cursor, retry_candidate)
         finally:
             if own_retry_conn is not None:
                 own_retry_conn.close()
