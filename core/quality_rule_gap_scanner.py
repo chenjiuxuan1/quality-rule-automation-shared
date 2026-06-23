@@ -555,6 +555,41 @@ def quote_qualified_identifier(value):
     return ".".join(quote_identifier(part) for part in parts)
 
 
+ALLOWED_SQL_TEMPLATE_PLACEHOLDERS = ("begin", "end")
+SQL_TEMPLATE_FIELDS = ("src_sql", "src_year_sql", "dest_sql", "dest_year_sql")
+
+
+def normalize_sql_template_braces(sql_text, allowed_placeholders=ALLOWED_SQL_TEMPLATE_PLACEHOLDERS):
+    text = str(sql_text or "")
+    if not text:
+        return text
+
+    escaped_open = "__QR_ESCAPED_OPEN__"
+    escaped_close = "__QR_ESCAPED_CLOSE__"
+    text = text.replace("{{", escaped_open).replace("}}", escaped_close)
+
+    placeholder_tokens = {}
+    for placeholder in allowed_placeholders:
+        token = f"__QR_PLACEHOLDER_{placeholder.upper()}__"
+        placeholder_tokens[token] = f"{{{placeholder}}}"
+        text = text.replace(f"{{{placeholder}}}", token)
+
+    text = text.replace("{", "{{").replace("}", "}}")
+
+    for token, placeholder in placeholder_tokens.items():
+        text = text.replace(token, placeholder)
+    text = text.replace(escaped_open, "{{").replace(escaped_close, "}}")
+    return text
+
+
+def sanitize_candidate_sql_templates(candidate):
+    sanitized = deepcopy(candidate or {})
+    for field in SQL_TEMPLATE_FIELDS:
+        if field in sanitized:
+            sanitized[field] = normalize_sql_template_braces(sanitized.get(field, ""))
+    return sanitized
+
+
 def fetch_table_columns(cursor, database_name, table_name):
     if not database_name or not table_name:
         return []
@@ -855,6 +890,7 @@ def validate_sql_syntax_with_validation_backend(cursor, sql_text, begin, end, ca
 
 
 def validate_candidate_sql_syntax(cursor, candidate, force_db=False):
+    candidate = sanitize_candidate_sql_templates(candidate)
     begin, end = build_validation_window()
     try:
         src_statements = validate_sql_syntax_with_validation_backend(
@@ -1493,6 +1529,7 @@ def wrap_result_with_database(item, database_name, country=None):
 
 
 def blocked_result_with_candidate(database_name, target_table, target_db, candidate, validation_result, reason, country=None, ai_status=""):
+    candidate = sanitize_candidate_sql_templates(candidate)
     result = {
         "status": "blocked",
         "rule_name": candidate.get("name", COUNT_RULE_NAME),
@@ -1560,6 +1597,7 @@ def maybe_retry_candidate_with_ai(database_name, working_table, candidate, valid
 
 
 def finalize_candidate_with_validation(database_name, target_table, target_db, candidate, working_table, git_roots=None, cursor=None, country=None, base_reason="可自动生成规则", ai_status=""):
+    candidate = sanitize_candidate_sql_templates(candidate)
     result = {
         "status": "candidate",
         "rule_name": candidate.get("name", COUNT_RULE_NAME),
@@ -1910,7 +1948,11 @@ def scan_quality_rule_gaps(databases=None, monitor_level=None, git_roots=None):
 
 
 def apply_candidates(results):
-    candidates = [item["candidate"] for item in results if item.get("status") == "candidate"]
+    candidates = [
+        sanitize_candidate_sql_templates(item["candidate"])
+        for item in results
+        if item.get("status") == "candidate"
+    ]
     if not candidates:
         return 0
 
@@ -1949,10 +1991,12 @@ def build_validation_window():
 
 
 def render_validation_sql(sql_text, begin, end):
-    return sql_text.replace("{begin}", begin).replace("{end}", end)
+    normalized = normalize_sql_template_braces(sql_text or "")
+    return normalized.format(begin=begin, end=end)
 
 
 def validate_candidate_sql(cursor, candidate):
+    candidate = sanitize_candidate_sql_templates(candidate)
     begin, end = build_validation_window()
     try:
         src_value, src_statements = execute_metric_sql_with_validation_backend(

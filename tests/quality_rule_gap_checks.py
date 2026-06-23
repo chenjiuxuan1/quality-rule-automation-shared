@@ -570,6 +570,34 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertEqual(result["validation_status"], "syntax_failed")
         self.assertIn("SR Gateway HTTP 403", result["validation_error"])
 
+    def test_normalize_sql_template_braces_escapes_non_placeholder_braces(self):
+        module = load_module()
+
+        normalized = module.normalize_sql_template_braces(
+            """SELECT regexp_replace(price_by_operator, '[{}"]', '') AS cleaned
+FROM demo
+WHERE created_at >= '{begin}' AND created_at < '{end}'"""
+        )
+
+        self.assertIn("'[{{}}\"]'", normalized)
+        self.assertIn("'{begin}'", normalized)
+        self.assertIn("'{end}'", normalized)
+
+    def test_render_validation_sql_preserves_literal_braces_after_format(self):
+        module = load_module()
+
+        rendered = module.render_validation_sql(
+            """SELECT regexp_replace(price_by_operator, '[{}"]', '') AS cleaned
+FROM demo
+WHERE created_at >= '{begin}' AND created_at < '{end}'""",
+            "2026-06-16 00:00:00",
+            "2026-06-17 00:00:00",
+        )
+
+        self.assertIn("'[{}\"]'", rendered)
+        self.assertIn("'2026-06-16 00:00:00'", rendered)
+        self.assertIn("'2026-06-17 00:00:00'", rendered)
+
     def test_validate_candidates_for_apply_uses_db_syntax_check_even_when_backend_is_sr_gateway(self):
         fake_cursor = FakeCursor([])
         fake_conn = FakeConnection(fake_cursor)
@@ -1381,6 +1409,36 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertIn("INSERT INTO wattrel_quality_setting", insert_sql)
         self.assertEqual(params[0], "cnt")
         self.assertEqual(params[5], "dwd_user_member_log")
+
+    def test_apply_candidates_sanitizes_unescaped_braces_before_insert(self):
+        fake_cursor = FakeCursor([[], []])
+        fake_conn = FakeConnection(fake_cursor)
+        module = load_module(fake_get_db_connection=mock.MagicMock(return_value=fake_conn))
+        results = [
+            {
+                "status": "candidate",
+                "candidate": {
+                    "name": "cnt",
+                    "desc": "总数",
+                    "src_db": "dwd_sec",
+                    "src_tbl": "dwd_cst_sms_by_date",
+                    "dest_db": "dwd_sec",
+                    "dest_tbl": "dwd_cst_sms_cost_total",
+                    "src_sql": """SELECT regexp_replace(price_by_operator, '[{}"]', '') AS cleaned
+FROM `dwd_sec`.`dwd_cst_sms_by_date`
+WHERE `updated_at` >= '{begin}' AND `updated_at` < '{end}'""",
+                    "dest_sql": "select 2",
+                    "msg_template": "tpl",
+                },
+            }
+        ]
+
+        applied = module.apply_candidates(results)
+
+        self.assertEqual(applied, 1)
+        _, params = fake_cursor.executed[0]
+        self.assertIn("'[{{}}\"]'", params[6])
+        self.assertIn("'{begin}'", params[6])
 
     def test_validate_candidates_executes_real_select_statements(self):
         fake_cursor = FakeCursor([[{"cnt": 8}], [{"cnt": 8}]])
