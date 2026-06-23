@@ -426,9 +426,20 @@ def fast_path_count_rule_needs_ai(table, src_check_field, dest_check_field):
 
 
 def build_sql_statements(src_db, src_table, target_db, target_table, src_check_field, dest_check_field, table):
+    quoted_src_relation = ".".join(
+        [quote_qualified_identifier(src_db), quote_identifier(src_table)]
+        if src_db
+        else [quote_identifier(src_table)]
+    )
+    quoted_target_relation = ".".join(
+        [quote_qualified_identifier(target_db), quote_identifier(target_table)]
+        if target_db
+        else [quote_identifier(target_table)]
+    )
+
     if src_check_field is None and dest_check_field is None:
-        src_sql = f"SELECT COUNT(*) as cnt FROM {src_db}.{src_table}"
-        dest_sql = f"SELECT COUNT(*) as cnt FROM {target_db}.{target_table}"
+        src_sql = f"SELECT COUNT(*) as cnt FROM {quoted_src_relation}"
+        dest_sql = f"SELECT COUNT(*) as cnt FROM {quoted_target_relation}"
         return src_sql, dest_sql
 
     id_field = None
@@ -444,15 +455,18 @@ def build_sql_statements(src_db, src_table, target_db, target_table, src_check_f
         dest_create_field = infer_target_check_field(table)
         if not src_create_field or not dest_create_field:
             return None, None
+        quoted_id_field = quote_identifier(id_field)
+        quoted_src_create_field = quote_identifier(src_create_field)
+        quoted_dest_create_field = quote_identifier(dest_create_field)
         src_sql = (
-            f"SET @min_id = IFNULL((SELECT MIN({id_field}) FROM {target_db}.{target_table} WHERE {dest_create_field} >= '{{begin}}'),0);"
-            f"SET @max_id = (SELECT MAX({id_field}) FROM {src_db}.{src_table} WHERE {id_field} >= @min_id AND {src_create_field} < '{{end}}');"
-            f"SELECT COUNT(*) AS cnt FROM {src_db}.`{src_table}` WHERE {id_field} >= @min_id AND {id_field} <= @max_id;"
+            f"SET @min_id = IFNULL((SELECT MIN({quoted_id_field}) FROM {quoted_target_relation} WHERE {quoted_dest_create_field} >= '{{begin}}'),0);"
+            f"SET @max_id = (SELECT MAX({quoted_id_field}) FROM {quoted_src_relation} WHERE {quoted_id_field} >= @min_id AND {quoted_src_create_field} < '{{end}}');"
+            f"SELECT COUNT(*) AS cnt FROM {quoted_src_relation} WHERE {quoted_id_field} >= @min_id AND {quoted_id_field} <= @max_id;"
         )
         dest_sql = (
-            f"SET @min_id = IFNULL((SELECT MIN({id_field}) FROM {target_db}.{target_table} WHERE {dest_create_field} >= '{{begin}}'),0);"
-            f"SET @max_id = (SELECT MAX({id_field}) FROM {target_db}.{target_table} WHERE {dest_create_field} < '{{end}}');"
-            f"SELECT COUNT(*) AS cnt FROM {target_db}.`{target_table}` WHERE {id_field} >= @min_id AND {id_field} <= @max_id;"
+            f"SET @min_id = IFNULL((SELECT MIN({quoted_id_field}) FROM {quoted_target_relation} WHERE {quoted_dest_create_field} >= '{{begin}}'),0);"
+            f"SET @max_id = (SELECT MAX({quoted_id_field}) FROM {quoted_target_relation} WHERE {quoted_dest_create_field} < '{{end}}');"
+            f"SELECT COUNT(*) AS cnt FROM {quoted_target_relation} WHERE {quoted_id_field} >= @min_id AND {quoted_id_field} <= @max_id;"
         )
         return src_sql, dest_sql
 
@@ -460,12 +474,12 @@ def build_sql_statements(src_db, src_table, target_db, target_table, src_check_f
         return None, None
 
     src_sql = (
-        f"SELECT COUNT(*) as cnt FROM {src_db}.`{src_table}` "
-        f"WHERE {src_check_field} >= '{{begin}}' AND {src_check_field} < '{{end}}'"
+        f"SELECT COUNT(*) as cnt FROM {quoted_src_relation} "
+        f"WHERE {quote_identifier(src_check_field)} >= '{{begin}}' AND {quote_identifier(src_check_field)} < '{{end}}'"
     )
     dest_sql = (
-        f"SELECT COUNT(*) as cnt FROM {target_db}.{target_table} "
-        f"WHERE {dest_check_field} >= '{{begin}}' AND {dest_check_field} < '{{end}}'"
+        f"SELECT COUNT(*) as cnt FROM {quoted_target_relation} "
+        f"WHERE {quote_identifier(dest_check_field)} >= '{{begin}}' AND {quote_identifier(dest_check_field)} < '{{end}}'"
     )
     return src_sql, dest_sql
 
@@ -530,6 +544,15 @@ def fetch_rows(cursor, sql, params=None):
 
 def _escape_identifier(value):
     return str(value or "").replace("`", "``")
+
+
+def quote_identifier(value):
+    return f"`{_escape_identifier(value)}`"
+
+
+def quote_qualified_identifier(value):
+    parts = [str(part).strip() for part in str(value or "").split(".") if str(part).strip()]
+    return ".".join(quote_identifier(part) for part in parts)
 
 
 def fetch_table_columns(cursor, database_name, table_name):
@@ -1824,8 +1847,8 @@ def build_exists_rule_candidate(database_name, table, rule_map, git_roots=None, 
         "dest_tbl": target_table,
         "src_sql": "",
         "dest_sql": (
-            f"select count(*) as if_exists from {target_db}.{target_table} "
-            f"where {target_check_field} >= DATE_SUB(CURRENT_DATE,INTERVAL 1 day);"
+            f"select count(*) as if_exists from {quote_qualified_identifier(target_db)}.{quote_identifier(target_table)} "
+            f"where {quote_identifier(target_check_field)} >= DATE_SUB(CURRENT_DATE,INTERVAL 1 day);"
         ),
         "msg_template": EXISTS_MSG_TEMPLATE,
         "check_field": target_check_field,

@@ -309,8 +309,25 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertEqual(result["candidate"]["src_tbl"], "withhold_detail_his")
         self.assertEqual(result["candidate"]["src_check_field"], "withhold_detail_his_create_at")
         self.assertEqual(result["candidate"]["dest_check_field"], "withhold_detail_his_create_at")
-        self.assertIn("FROM biz_catalog.repay.`withhold_detail_his`", result["candidate"]["src_sql"])
-        self.assertIn("FROM ods.ods_repay_withhold_detail_his", result["candidate"]["dest_sql"])
+        self.assertIn("FROM `biz_catalog`.`repay`.`withhold_detail_his`", result["candidate"]["src_sql"])
+        self.assertIn("FROM `ods`.`ods_repay_withhold_detail_his`", result["candidate"]["dest_sql"])
+
+    def test_build_sql_statements_quotes_hyphenated_catalog_database_identifiers(self):
+        module = load_module()
+
+        src_sql, dest_sql = module.build_sql_statements(
+            "data_quality_m5.ma-user-center",
+            "user_import_detail",
+            "ods",
+            "ods_ma_user_center_user_import_detail",
+            "created_at",
+            "created_at",
+            {},
+        )
+
+        self.assertIn("FROM `data_quality_m5`.`ma-user-center`.`user_import_detail`", src_sql)
+        self.assertIn("WHERE `created_at` >= '{begin}' AND `created_at` < '{end}'", src_sql)
+        self.assertIn("FROM `ods`.`ods_ma_user_center_user_import_detail`", dest_sql)
 
     def test_build_count_rule_candidate_blocks_when_check_fields_differ(self):
         module = load_module()
