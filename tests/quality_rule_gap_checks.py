@@ -1115,15 +1115,15 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         fake_cursor = FakeCursor(
             [
                 [
-                    {"dest_db": "dwd", "dest_tbl": "dwd_has_rule", "src_db": "ods", "src_tbl": "ods_has_rule"},
-                    {"dest_db": "dwd", "dest_tbl": "dwd_needs_rule", "src_db": "ods", "src_tbl": "ods_needs_rule"},
-                ],
-                [
-                    {"id": 1, "db": "dwd", "tbl": "dwd_has_rule", "monitor_level": 3, "is_auto_check": 1},
-                    {"id": 2, "db": "dwd", "tbl": "dwd_needs_rule", "monitor_level": 3, "is_auto_check": 1},
+                    {"id": 1, "db": "dwd", "tbl": "dwd_has_rule", "dep_tbls": json.dumps(["ods_has_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
+                    {"id": 2, "db": "dwd", "tbl": "dwd_needs_rule", "dep_tbls": json.dumps(["ods_needs_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                 ],
                 [
                     {"dest_db": "dwd", "dest_tbl": "dwd_has_rule", "name": "cnt"},
+                ],
+                [
+                    {"dest_tbl": "ods_has_rule", "check_field": "", "columns": json.dumps(["id", "created_at"]), "src_tbl": "has_rule"},
+                    {"dest_tbl": "ods_needs_rule", "check_field": "", "columns": json.dumps(["id", "created_at"]), "src_tbl": "needs_rule"},
                 ],
             ]
         )
@@ -1135,15 +1135,6 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertEqual(
             results,
             [
-                {
-                    "database": "dwd",
-                    "tbl": "dwd_has_rule",
-                    "dest_db": "dwd",
-                    "rule_name": "cnt",
-                    "status": "existing",
-                    "reason": "告警库已存在相关校验规则，待在确认表关闭自动生成",
-                    "monitor_level": 3,
-                },
                 {
                     "database": "dwd",
                     "tbl": "dwd_needs_rule",
@@ -1160,10 +1151,7 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         fake_cursor = FakeCursor(
             [
                 [
-                    {"dest_db": "dwd", "dest_tbl": "dwd_has_metric_rule", "src_db": "ods", "src_tbl": "ods_has_metric_rule"},
-                ],
-                [
-                    {"id": 1, "db": "dwd", "tbl": "dwd_has_metric_rule", "monitor_level": 3, "is_auto_check": 1},
+                    {"id": 1, "db": "dwd", "tbl": "dwd_has_metric_rule", "dep_tbls": json.dumps(["ods_has_metric_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                 ],
                 [
                     {
@@ -1173,6 +1161,9 @@ class QualityRuleGapScannerTests(unittest.TestCase):
                         "src_sql": "SELECT COALESCE(ROUND(SUM(order_amount), 6), 0) AS cnt FROM ods.ods_has_metric_rule",
                         "dest_sql": "SELECT COALESCE(ROUND(SUM(total_amount), 6), 0) AS cnt FROM dwd.dwd_has_metric_rule",
                     },
+                ],
+                [
+                    {"dest_tbl": "ods_has_metric_rule", "check_field": "", "columns": json.dumps(["id", "created_at"]), "src_tbl": "has_metric_rule"},
                 ],
             ]
         )
@@ -1196,31 +1187,44 @@ class QualityRuleGapScannerTests(unittest.TestCase):
             ],
         )
 
-    def test_list_pending_generation_tables_only_includes_current_alert_tables(self):
+    def test_list_pending_generation_tables_includes_missing_rule_tables_without_alert_rows(self):
         fake_cursor = FakeCursor(
             [
                 [
-                    {"dest_db": "ods", "dest_tbl": "ods_online_days", "src_db": "ods", "src_tbl": "ods_online_days"},
+                    {
+                        "id": 1,
+                        "db": "dwd",
+                        "tbl": "dwd_user_member_log",
+                        "dep_tbls": json.dumps(["ods_user_member_log"]),
+                        "increment_field": "created_at",
+                        "check_field": "",
+                        "monitor_level": 1,
+                    },
                 ],
                 [
-                    {"dest_db": "ods", "dest_tbl": "ods_online_days", "pk": "id", "dest_tbl_partition_field": None, "monitor_level": 1},
-                    {"dest_db": "ods", "dest_tbl": "ods_arcticfox_collect_at", "pk": "id", "dest_tbl_partition_field": None, "monitor_level": 1},
                 ],
-                [],
+                [
+                    {
+                        "dest_tbl": "ods_user_member_log",
+                        "check_field": "",
+                        "columns": json.dumps(["id", "created_at"]),
+                        "src_tbl": "user_member_log",
+                    },
+                ],
             ]
         )
         fake_conn = FakeConnection(fake_cursor)
         module = load_module(fake_get_db_connection=mock.MagicMock(return_value=fake_conn))
 
-        results = module.list_pending_generation_tables(databases=["ods"])
+        results = module.list_pending_generation_tables(databases=["dwd"])
 
         self.assertEqual(
             results,
             [
                 {
-                    "database": "ods",
-                    "tbl": "ods_online_days",
-                    "dest_db": "ods",
+                    "database": "dwd",
+                    "tbl": "dwd_user_member_log",
+                    "dest_db": "dwd",
                     "rule_name": "cnt",
                     "status": "pending_generation",
                     "reason": "告警库缺少该表相关校验语句，待进入自动生成",
@@ -1233,16 +1237,15 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         fake_cursor = FakeCursor(
             [
                 [
-                    {"dest_db": "ods", "dest_tbl": "ods_no_pk", "src_db": "ods", "src_tbl": "ods_no_pk"},
-                    {"dest_db": "ods", "dest_tbl": "ods_partitioned", "src_db": "ods", "src_tbl": "ods_partitioned"},
-                    {"dest_db": "ods", "dest_tbl": "ods_ok", "src_db": "ods", "src_tbl": "ods_ok"},
-                ],
-                [
                     {"dest_db": "ods", "dest_tbl": "ods_no_pk", "pk": None, "dest_tbl_partition_field": None, "monitor_level": 1},
                     {"dest_db": "ods", "dest_tbl": "ods_partitioned", "pk": "id", "dest_tbl_partition_field": "dt", "monitor_level": 1},
-                    {"dest_db": "ods", "dest_tbl": "ods_ok", "pk": "id", "dest_tbl_partition_field": None, "monitor_level": 2},
+                    {"dest_db": "ods", "dest_tbl": "ods_ok", "src_tbl": "ok", "src_db_id": 1, "pk": "id", "dest_tbl_partition_field": None, "columns": json.dumps(["id", "created_at"]), "monitor_level": 2},
                 ],
                 [],
+                [],
+                [
+                    {"id": 1, "catalog": "biz_catalog", "db": "biz"},
+                ],
             ]
         )
         fake_conn = FakeConnection(fake_cursor)
@@ -1264,6 +1267,36 @@ class QualityRuleGapScannerTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_list_pending_generation_tables_includes_blocked_tables_when_rule_cannot_be_built(self):
+        fake_cursor = FakeCursor(
+            [
+                [
+                    {
+                        "id": 1,
+                        "db": "dwd",
+                        "tbl": "dwd_missing_dep",
+                        "dep_tbls": json.dumps([]),
+                        "increment_field": "created_at",
+                        "check_field": "",
+                        "monitor_level": 3,
+                    },
+                ],
+                [],
+                [],
+            ]
+        )
+        fake_conn = FakeConnection(fake_cursor)
+        module = load_module(fake_get_db_connection=mock.MagicMock(return_value=fake_conn))
+
+        results = module.list_pending_generation_tables(databases=["dwd"])
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["database"], "dwd")
+        self.assertEqual(results[0]["tbl"], "dwd_missing_dep")
+        self.assertEqual(results[0]["status"], "blocked")
+        self.assertEqual(results[0]["rule_name"], "cnt")
+        self.assertIn("缺少 dep_tbls 依赖表配置", results[0]["reason"])
 
     def test_main_json_output_serializes_datetime_values(self):
         module = load_module()

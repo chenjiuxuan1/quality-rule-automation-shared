@@ -1057,45 +1057,55 @@ def list_pending_generation_tables(databases=None, monitor_level=None):
     try:
         with conn.cursor() as cursor:
             items = []
-            alert_tables = load_recent_alert_tables(cursor, databases=databases)
+            ods_table_by_dest = None
+            ods_db_by_id = None
             for database_name in databases:
                 tables = load_tables(cursor, database_name, monitor_level=monitor_level)
                 rule_map = load_quality_rules(cursor, database_name)
                 rule_name = resolve_rule_name(database_name)
+                if database_name in COUNT_RULE_DATABASES:
+                    if ods_table_by_dest is None:
+                        ods_table_by_dest = load_ods_table_by_dest(cursor)
+                    if database_name in ("ods", "ods_security") and ods_db_by_id is None:
+                        ods_db_by_id = load_ods_db_by_id(cursor)
                 for table in tables:
                     target_table = table["dest_tbl"] if database_name in ("ods", "ods_security") else table["tbl"]
-                    if (database_name, target_table) not in alert_tables:
-                        continue
-                    existing_rule = find_matching_existing_rule(rule_map, target_table, rule_name)
-                    if existing_rule:
-                        items.append(
-                            {
-                                "database": database_name,
-                                "tbl": target_table,
-                                "dest_db": existing_rule.get("dest_db") or (table.get("dest_db") or database_name),
-                                "rule_name": existing_rule.get("name") or rule_name,
-                                "status": "existing",
-                                "reason": "告警库已存在相关校验规则，待在确认表关闭自动生成",
-                                "monitor_level": table.get("monitor_level"),
-                            }
+                    if database_name in EXISTS_RULE_DATABASES:
+                        scan_result = build_exists_rule_candidate(
+                            database_name,
+                            table,
+                            rule_map,
+                            cursor=cursor,
                         )
-                        continue
-                    if database_name in ("ods", "ods_security"):
-                        if table.get("pk") is None:
-                            continue
-                        if table.get("dest_tbl_partition_field") is not None:
-                            continue
-                        dest_db = table.get("dest_db") or database_name
                     else:
-                        dest_db = table.get("db") or database_name
+                        scan_result = build_count_rule_candidate(
+                            database_name,
+                            table,
+                            rule_map,
+                            ods_table_by_dest or {},
+                            ods_db_by_id=ods_db_by_id or {},
+                            cursor=cursor,
+                        )
+
+                    status = scan_result.get("status")
+                    if status in {"existing", "skipped"}:
+                        continue
+
+                    if status == "candidate":
+                        item_status = "pending_generation"
+                        item_reason = "告警库缺少该表相关校验语句，待进入自动生成"
+                    else:
+                        item_status = status or "blocked"
+                        item_reason = scan_result.get("reason") or "缺少相关校验规则，需人工确认"
+
                     items.append(
                         {
                             "database": database_name,
                             "tbl": target_table,
-                            "dest_db": dest_db,
-                            "rule_name": rule_name,
-                            "status": "pending_generation",
-                            "reason": "告警库缺少该表相关校验语句，待进入自动生成",
+                            "dest_db": scan_result.get("dest_db") or table.get("dest_db") or table.get("db") or database_name,
+                            "rule_name": scan_result.get("rule_name") or rule_name,
+                            "status": item_status,
+                            "reason": item_reason,
                             "monitor_level": table.get("monitor_level"),
                         }
                     )
