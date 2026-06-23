@@ -67,6 +67,11 @@ CHECK_FIELD_CANDIDATES = (
     "create_date",
     "update_date",
 )
+COMPLEX_LINEAGE_PATTERNS = (
+    (re.compile(r"\brow_number\s*\(", re.IGNORECASE), "ROW_NUMBER 去重"),
+    (re.compile(r"\bover\s*\(", re.IGNORECASE), "窗口函数"),
+    (re.compile(r"\bnot\s+exists\b", re.IGNORECASE), "NOT EXISTS 反查"),
+)
 
 
 def resolve_rule_name(database_name):
@@ -166,6 +171,7 @@ def infer_git_rule_hints(dest_tbl, src_tbl=None, git_roots=None):
     upstream_candidates = []
     check_field_candidates = []
     scanned_paths = []
+    complexity_reasons = []
 
     from_pattern = re.compile(r"\b(?:from|join)\s+([a-zA-Z0-9_\.]+)", re.IGNORECASE)
     where_pattern = re.compile(r"\b([a-zA-Z0-9_]+)\s*(?:>=|>|<=|<|=)\s*[\{\$:'\"]", re.IGNORECASE)
@@ -197,6 +203,9 @@ def infer_git_rule_hints(dest_tbl, src_tbl=None, git_roots=None):
         for match in where_pattern.findall(text):
             if looks_like_time_field(match):
                 check_field_candidates.append(match.lower())
+        for pattern, label in COMPLEX_LINEAGE_PATTERNS:
+            if pattern.search(text):
+                complexity_reasons.append(label)
 
     result = {}
     if upstream_candidates:
@@ -208,6 +217,15 @@ def infer_git_rule_hints(dest_tbl, src_tbl=None, git_roots=None):
                 break
     if scanned_paths:
         result["git_matches"] = scanned_paths[:20]
+    if complexity_reasons:
+        unique_reasons = []
+        for reason in complexity_reasons:
+            if reason not in unique_reasons:
+                unique_reasons.append(reason)
+        result["requires_ai_reason"] = (
+            "Git SQL 命中复杂同步逻辑（" + "、".join(unique_reasons) + "），"
+            "不适合直接生成简单 count 校验，需走 AI 生成"
+        )
     return result
     if isinstance(raw_value, list):
         return raw_value
@@ -1390,6 +1408,43 @@ def build_count_rule_candidate(
             )
 
     working_table = enrich_ai_schema_context(working_table, cursor=cursor)
+
+    git_hints = infer_git_rule_hints(
+        working_table.get("dest_tbl") or target_table,
+        src_tbl=working_table.get("src_tbl"),
+        git_roots=git_roots,
+    )
+    if git_hints.get("git_matches"):
+        merged_matches = list(dict.fromkeys((working_table.get("git_matches") or []) + git_hints.get("git_matches", [])))
+        working_table["git_matches"] = merged_matches[:20]
+    complex_reason = git_hints.get("requires_ai_reason", "")
+    if complex_reason:
+        ai_candidate, ai_meta = call_ai_candidate(
+            database_name,
+            working_table,
+            complex_reason,
+            git_roots=git_roots,
+        )
+        if ai_candidate:
+            return finalize_candidate_with_validation(
+                database_name,
+                target_table,
+                ai_candidate.get("dest_db") or working_table.get("dest_db") or working_table.get("db"),
+                ai_candidate,
+                working_table,
+                git_roots=git_roots,
+                cursor=cursor,
+                base_reason=f"AI 兜底生成规则: {ai_candidate.get('ai_reason', complex_reason)}",
+                ai_status=ai_meta.get("status", ""),
+            )
+        return blocked_result_with_ai_draft(
+            working_table,
+            target_table,
+            working_table.get("dest_db") or working_table.get("db"),
+            ai_meta,
+            complex_reason,
+        )
+
     if requested_metric_field:
         custom_result = build_requested_metric_candidate_with_ai(
             database_name,
@@ -1732,7 +1787,39 @@ def maybe_retry_candidate_with_ai(database_name, working_table, candidate, valid
     return retry_candidate, retry_meta
 
 
-def finalize_candidate_with_validation(database_name, target_table, target_db, candidate, working_table, git_roots=None, cursor=None, country=None, base_reason="可自动生成规则", ai_status=""):
+def maybe_retry_candidate_for_field_consistency(database_name, working_table, candidate, git_roots=None):
+    if max_ai_retry_count() <= 0:
+        return None, {"status": "ai_retry_disabled", "reason": "AI 二次修正次数为 0"}
+
+    retry_table = enrich_ai_schema_context(
+        {
+            **working_table,
+            "validation_feedback": {
+                "previous_src_check_field": candidate.get("src_check_field") or "",
+                "previous_dest_check_field": candidate.get("dest_check_field") or "",
+                "previous_src_sql": candidate.get("src_sql") or "",
+                "previous_dest_sql": candidate.get("dest_sql") or "",
+                "validation_status": "not_validated",
+                "validation_error": "",
+            },
+        }
+    )
+    retry_reason = (
+        "上一版 SQL 的 src_check_field 与 dest_check_field 不一致。"
+        "请重新生成，并确保 src_sql 与 dest_sql 使用同一个窗口限制字段；"
+        "不要出现 source 用 update/create/id、target 用另一种字段的混搭。"
+        "如果无法统一口径，请返回不可自动生成。"
+    )
+    retry_candidate, retry_meta = call_ai_candidate(
+        database_name,
+        retry_table,
+        retry_reason,
+        git_roots=git_roots,
+    )
+    return retry_candidate, retry_meta
+
+
+def finalize_candidate_with_validation(database_name, target_table, target_db, candidate, working_table, git_roots=None, cursor=None, country=None, base_reason="可自动生成规则", ai_status="", field_retry_attempted=False):
     candidate = sanitize_candidate_sql_templates(candidate)
     result = {
         "status": "candidate",
@@ -1748,11 +1835,34 @@ def finalize_candidate_with_validation(database_name, target_table, target_db, c
         candidate.get("src_check_field"),
         candidate.get("dest_check_field"),
     ):
+        if not field_retry_attempted and max_ai_retry_count() > 0:
+            retry_candidate, retry_meta = maybe_retry_candidate_for_field_consistency(
+                database_name,
+                working_table,
+                candidate,
+                git_roots=git_roots,
+            )
+            if retry_candidate:
+                retried = finalize_candidate_with_validation(
+                    database_name,
+                    target_table,
+                    retry_candidate.get("dest_db") or target_db,
+                    retry_candidate,
+                    working_table,
+                    git_roots=git_roots,
+                    cursor=cursor,
+                    country=country,
+                    base_reason=f"AI 二次修正限制字段后继续校验: {retry_candidate.get('ai_reason', '')}".strip(": "),
+                    ai_status=retry_meta.get("status", ""),
+                    field_retry_attempted=True,
+                )
+                retried["ai_retry_count"] = max(retried.get("ai_retry_count", 0), 1)
+                return retried
         validation_result = make_validation_result(
             "not_validated",
             "基础要求不满足：两个校验语句的限制字段必须一致",
         )
-        return blocked_result_with_candidate(
+        blocked = blocked_result_with_candidate(
             database_name,
             target_table,
             target_db,
@@ -1762,6 +1872,9 @@ def finalize_candidate_with_validation(database_name, target_table, target_db, c
             country=country,
             ai_status=ai_status,
         )
+        if field_retry_attempted or max_ai_retry_count() > 0:
+            blocked["ai_retry_count"] = 1 if field_retry_attempted else 0
+        return blocked
 
     own_conn = None
     validation_cursor = cursor

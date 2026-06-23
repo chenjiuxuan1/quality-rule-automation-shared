@@ -459,6 +459,117 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertIn("无法统一", mocked_ai.call_args.args[2])
         mocked_finalize.assert_called_once()
 
+
+    def test_infer_git_rule_hints_marks_complex_lineage_for_ai(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sql_path = Path(temp_dir) / "dwd_app_can_loan.sql"
+            sql_path.write_text(
+                """
+                insert into dwd.dwd_app_can_loan
+                select *
+                from (
+                    select can_loan_user_id,
+                           can_loan_create_at,
+                           row_number() over (
+                               partition by can_loan_user_id, date(can_loan_create_at)
+                               order by can_loan_create_at
+                           ) as row_num
+                    from hive.dwb_paimon.dwb_c_can_loan t
+                    where not exists (
+                        select 1 from dwd.dwd_app_can_loan
+                        where can_loan_user_id = t.can_loan_user_id
+                    )
+                ) a
+                where row_num = 1
+                """,
+                encoding="utf-8",
+            )
+
+            hints = module.infer_git_rule_hints(
+                "dwd_app_can_loan",
+                src_tbl="dwb_c_can_loan",
+                git_roots=[temp_dir],
+            )
+
+        self.assertIn("requires_ai_reason", hints)
+        self.assertIn("ROW_NUMBER", hints["requires_ai_reason"])
+        self.assertIn("NOT EXISTS", hints["requires_ai_reason"])
+
+    def test_build_count_rule_candidate_routes_complex_dwd_lineage_to_ai(self):
+        module = load_module()
+        table = {
+            "id": 1,
+            "db": "dwd",
+            "tbl": "dwd_app_can_loan",
+            "dep_tbls": json.dumps(["dwb_c_can_loan"]),
+            "increment_field": "can_loan_create_at",
+            "check_field": "can_loan_create_at",
+            "dest_columns": ["can_loan_create_at", "can_loan_user_id"],
+        }
+        ods_table_by_dest = {
+            "dwb_c_can_loan": {
+                "dest_tbl": "dwb_c_can_loan",
+                "check_field": "can_loan_create_at",
+                "columns": json.dumps(["can_loan_id", "can_loan_user_id", "can_loan_create_at"]),
+                "src_tbl": "c_can_loan",
+            }
+        }
+        ai_candidate = {
+            "name": "cnt",
+            "src_db": "hive.dwb_paimon",
+            "src_tbl": "dwb_c_can_loan",
+            "dest_db": "dwd",
+            "dest_tbl": "dwd_app_can_loan",
+            "src_sql": "SELECT COUNT(DISTINCT can_loan_user_id, DATE(can_loan_create_at)) AS cnt FROM hive.dwb_paimon.dwb_c_can_loan WHERE can_loan_create_at >= '{begin}' AND can_loan_create_at < '{end}'",
+            "dest_sql": "SELECT COUNT(*) AS cnt FROM dwd.dwd_app_can_loan WHERE can_loan_create_at >= '{begin}' AND can_loan_create_at < '{end}'",
+            "src_check_field": "can_loan_create_at",
+            "dest_check_field": "can_loan_create_at",
+            "ai_reason": "复杂去重入仓逻辑，按用户+日期口径生成",
+        }
+        ai_meta = {"status": "ok", "reason": "", "git_matches": []}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sql_path = Path(temp_dir) / "dwd_app_can_loan.sql"
+            sql_path.write_text(
+                """
+                insert into dwd.dwd_app_can_loan
+                select *
+                from (
+                    select can_loan_user_id,
+                           can_loan_create_at,
+                           row_number() over (
+                               partition by can_loan_user_id, date(can_loan_create_at)
+                               order by can_loan_create_at
+                           ) as row_num
+                    from hive.dwb_paimon.dwb_c_can_loan t
+                    where not exists (
+                        select 1 from dwd.dwd_app_can_loan
+                        where can_loan_user_id = t.can_loan_user_id
+                    )
+                ) a
+                where row_num = 1
+                """,
+                encoding="utf-8",
+            )
+            with mock.patch.object(module, "call_ai_candidate", return_value=(ai_candidate, ai_meta)) as mocked_ai:
+                with mock.patch.object(
+                    module,
+                    "finalize_candidate_with_validation",
+                    return_value={"status": "candidate", "candidate": ai_candidate},
+                ) as mocked_finalize:
+                    result = module.build_count_rule_candidate(
+                        "dwd",
+                        table,
+                        {},
+                        ods_table_by_dest,
+                        git_roots=[temp_dir],
+                    )
+
+        self.assertEqual(result["status"], "candidate")
+        self.assertIn("复杂同步逻辑", mocked_ai.call_args.args[2])
+        mocked_finalize.assert_called_once()
+
     def test_build_count_rule_candidate_keeps_ai_draft_sql_in_blocked_result(self):
         module = load_module()
         table = {
@@ -781,6 +892,82 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
             )
 
         self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["validation_status"], "not_validated")
+        self.assertIn("src_check_field 和 dest_check_field 必须一致", result["reason"])
+        mocked_validate.assert_not_called()
+
+    def test_finalize_candidate_with_validation_retries_ai_when_fields_differ(self):
+        module = load_module()
+        candidate = {
+            "name": "cnt",
+            "src_db": "hive.dwb_paimon",
+            "src_tbl": "dwb_r2_withhold",
+            "dest_db": "dwd",
+            "dest_tbl": "dwd_asset_withhold",
+            "src_sql": "SELECT COUNT(1) AS cnt FROM hive.dwb_paimon.dwb_r2_withhold WHERE withhold_update_at >= '{begin}' AND withhold_update_at < '{end}'",
+            "dest_sql": "SELECT COUNT(1) AS cnt FROM dwd.dwd_asset_withhold WHERE withhold_create_at >= '{begin}' AND withhold_create_at < '{end}'",
+            "src_check_field": "withhold_update_at",
+            "dest_check_field": "withhold_create_at",
+        }
+        retry_candidate = {
+            **candidate,
+            "src_sql": "SELECT COUNT(1) AS cnt FROM hive.dwb_paimon.dwb_r2_withhold WHERE withhold_create_at >= '{begin}' AND withhold_create_at < '{end}'",
+            "src_check_field": "withhold_create_at",
+            "dest_check_field": "withhold_create_at",
+            "ai_reason": "已统一为 withhold_create_at",
+        }
+
+        with mock.patch.object(module, "call_ai_candidate", return_value=(retry_candidate, {"status": "ok", "reason": ""})) as mocked_ai, \
+             mock.patch.object(module, "validate_candidate_sql_syntax", return_value={"ok": True, "validation_status": "syntax_ok", "reason": "ok", "validation_error": "", "validation_window_begin": "", "validation_window_end": ""}) as mocked_syntax, \
+             mock.patch.object(module, "validate_candidate_sql", return_value={"ok": True, "validation_status": "matched", "reason": "ok", "validation_error": "", "validation_window_begin": "", "validation_window_end": "", "src_value": 1, "dest_value": 1, "diff": 0}) as mocked_validate:
+            result = module.finalize_candidate_with_validation(
+                "dwd",
+                "dwd_asset_withhold",
+                "dwd",
+                candidate,
+                {},
+            )
+
+        self.assertEqual(result["status"], "candidate")
+        self.assertEqual(result["ai_retry_count"], 1)
+        self.assertEqual(result["validation_status"], "matched")
+        self.assertEqual(result["candidate"]["src_check_field"], "withhold_create_at")
+        self.assertEqual(result["candidate"]["dest_check_field"], "withhold_create_at")
+        self.assertIn("AI 二次修正限制字段后继续校验", result["reason"])
+        mocked_ai.assert_called_once()
+        mocked_syntax.assert_called_once()
+        mocked_validate.assert_called_once()
+
+    def test_finalize_candidate_with_validation_blocks_when_field_retry_still_differs(self):
+        module = load_module()
+        candidate = {
+            "name": "cnt",
+            "src_db": "hive.dwb_paimon",
+            "src_tbl": "dwb_r2_withhold",
+            "dest_db": "dwd",
+            "dest_tbl": "dwd_asset_withhold",
+            "src_sql": "SELECT COUNT(1) AS cnt FROM hive.dwb_paimon.dwb_r2_withhold WHERE withhold_update_at >= '{begin}' AND withhold_update_at < '{end}'",
+            "dest_sql": "SELECT COUNT(1) AS cnt FROM dwd.dwd_asset_withhold WHERE withhold_create_at >= '{begin}' AND withhold_create_at < '{end}'",
+            "src_check_field": "withhold_update_at",
+            "dest_check_field": "withhold_create_at",
+        }
+        retry_candidate = {
+            **candidate,
+            "ai_reason": "仍然无法统一字段",
+        }
+
+        with mock.patch.object(module, "call_ai_candidate", return_value=(retry_candidate, {"status": "ok", "reason": ""})), \
+             mock.patch.object(module, "validate_candidate_sql") as mocked_validate:
+            result = module.finalize_candidate_with_validation(
+                "dwd",
+                "dwd_asset_withhold",
+                "dwd",
+                candidate,
+                {},
+            )
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["ai_retry_count"], 1)
         self.assertEqual(result["validation_status"], "not_validated")
         self.assertIn("src_check_field 和 dest_check_field 必须一致", result["reason"])
         mocked_validate.assert_not_called()
