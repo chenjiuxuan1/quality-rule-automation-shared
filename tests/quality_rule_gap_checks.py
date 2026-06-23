@@ -1284,6 +1284,48 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
 
         self.assertEqual(roots[0], str(workflow_root))
 
+
+    def test_infer_git_rule_hints_prefers_primary_insert_source_over_comment_dependency(self):
+        module = load_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sql_path = Path(temp_dir) / "dwd_app_ask_loan_result_all.sql"
+            sql_path.write_text(
+                """
+                /*
+                 Dependency: [ods_cash_apply_ask_loan_result]
+                */
+                insert into dwd.dwd_app_ask_loan_result_all
+                select
+                    ask_loan_result_id,
+                    ask_loan_result_created_at
+                from hive.dwb_paimon.dwb_r_ask_loan_result t
+                where op_ts >= convert_tz(@v_start_dt, @v_timezone, 'UTC')
+                  and not exists (
+                    select 1
+                    from dwd.dwd_app_ask_loan_result_all
+                    where ask_loan_result_id = t.ask_loan_result_id
+                  )
+                ;
+
+                update dwd.dwd_app_ask_loan_result_all
+                set first_loan_label = s.ask_loan_user_tier_tag
+                from (
+                    select ask_loan_user_tier_loan_uuid
+                    from hive.dwb_paimon.dwb_r_ask_loan_user_tier
+                ) s
+                where dwd.dwd_app_ask_loan_result_all.ask_loan_result_loan_uuid = s.ask_loan_user_tier_loan_uuid
+                """,
+                encoding="utf-8",
+            )
+
+            hints = module.infer_git_rule_hints(
+                "dwd_app_ask_loan_result_all",
+                git_roots=[temp_dir],
+            )
+
+        self.assertEqual(hints["dep_tbls"], ["hive.dwb_paimon.dwb_r_ask_loan_result"])
+        self.assertEqual(Path(hints["git_matches"][0]).name, "dwd_app_ask_loan_result_all.sql")
+
     def test_infer_git_rule_hints_can_fallback_to_content_scan_when_filename_does_not_match(self):
         module = load_module()
         with tempfile.TemporaryDirectory() as temp_dir:

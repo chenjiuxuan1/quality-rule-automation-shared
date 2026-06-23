@@ -246,6 +246,78 @@ def normalize_for_json(value):
     return value
 
 
+def split_sql_expression_list(text):
+    items = []
+    current = []
+    depth = 0
+    for char in str(text or ''):
+        if char == '(':
+            depth += 1
+        elif char == ')' and depth > 0:
+            depth -= 1
+        if char == ',' and depth == 0:
+            item = ''.join(current).strip()
+            if item:
+                items.append(item)
+            current = []
+            continue
+        current.append(char)
+    tail = ''.join(current).strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def extract_required_grain_hints(git_context):
+    expressions = []
+    identifiers = []
+    pattern = re.compile(
+        r"row_number\s*\(\s*\)\s*over\s*\(.*?partition\s+by\s+(?P<clause>.*?)\s+order\s+by",
+        re.IGNORECASE | re.DOTALL,
+    )
+    identifier_pattern = re.compile(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b")
+    keywords = {
+        'date', 'cast', 'as', 'and', 'or', 'if', 'case', 'when', 'then', 'else', 'end',
+        'concat', 'substr', 'substring', 'coalesce', 'ifnull', 'nullif', 'trim', 'upper', 'lower'
+    }
+    for item in git_context or []:
+        snippet = (item or {}).get('snippet', '')
+        for match in pattern.finditer(snippet):
+            clause = match.group('clause').strip()
+            for expr in split_sql_expression_list(clause):
+                normalized = ' '.join(expr.split())
+                if normalized and normalized not in expressions:
+                    expressions.append(normalized)
+                for token in identifier_pattern.findall(expr):
+                    lowered = token.lower()
+                    if lowered in keywords:
+                        continue
+                    if lowered not in identifiers:
+                        identifiers.append(lowered)
+    return {
+        'expressions': expressions,
+        'identifiers': identifiers,
+    }
+
+
+def source_sql_respects_required_grain(sql_text, grain_hints):
+    identifiers = list(grain_hints.get('identifiers') or [])
+    if not identifiers:
+        return True
+    normalized_sql = str(sql_text or '').lower()
+    for identifier in identifiers:
+        if re.search(rf"{re.escape(identifier)}", normalized_sql) is None:
+            return False
+    return True
+
+
+def dest_sql_respects_required_grain(sql_text, grain_hints):
+    normalized_sql = str(sql_text or '').lower()
+    if re.search(r"count\s*\(\s*(?:1|\*)\s*\)", normalized_sql):
+        return True
+    return source_sql_respects_required_grain(sql_text, grain_hints)
+
+
 def build_ai_messages(database_name, table, git_context, failure_reason):
     system_prompt = (
         "你是一个资深数仓数据质量规则生成助手。"
@@ -263,6 +335,7 @@ def build_ai_messages(database_name, table, git_context, failure_reason):
         raw_columns = table.get("columns")
     source_columns = normalize_for_json(raw_columns if raw_columns is not None else [])
     dest_columns = normalize_for_json(table.get("dest_columns") or [])
+    grain_hints = extract_required_grain_hints(git_context)
     payload = {
         "task": "generate_metric_rule_candidate",
         "database": database_name,
@@ -277,6 +350,7 @@ def build_ai_messages(database_name, table, git_context, failure_reason):
         "dest_ddl_summary": normalize_for_json(table.get("dest_ddl_summary") or ""),
         "failure_reason": failure_reason,
         "validation_feedback": normalize_for_json(table.get("validation_feedback") or {}),
+        "required_grain_expressions": normalize_for_json(grain_hints.get("expressions") or []),
         "git_context": normalize_for_json(git_context),
         "good_examples": [
             {
@@ -364,6 +438,8 @@ def build_ai_messages(database_name, table, git_context, failure_reason):
             "如果 requested_metric_field 非空，必须优先围绕该字段生成校验 SQL；不要忽略它退回默认 count(*) 或 if_exists。",
             "如果 requested_metric_field 指向目标侧金额/数量/成本字段，应优先追溯源侧语义对应字段，并生成该字段相关的单值聚合 SQL。",
             "如果 ETL 包含 split、rate、比例分摊、union all、多笔拆分等迹象，默认 count(*) 不可靠，应优先考虑 sum(金额) 或 count(distinct 业务键)。",
+            "如果 required_grain_expressions 非空，说明 Git SQL 中存在 ROW_NUMBER/PARTITION BY 去重粒度；src_sql 必须显式遵守该粒度，不允许退化成对 surrogate id 的 DISTINCT 计数。",
+            "如果 required_grain_expressions 非空，dest_sql 只有在目标表天然一行一粒度时才允许使用 count(*)/count(1)；否则也必须显式体现相同粒度。",
             "如果选择金额、成本、汇率换算后的数值聚合，必须统一两边精度，例如 ROUND(SUM(...), 6) 或 CAST 为相同 DECIMAL 精度，避免 0.000001 级别尾差导致误判。",
             "如果源表和目标表字段同语义，应优先给出相同字段名。",
             "如果 Git 片段或元数据表明源表和目标表都存在同一业务事件字段，必须优先使用同一个字段名，不要退回到目标表的 etl_create_time。",
@@ -436,6 +512,7 @@ def sanitize_messages_for_langfuse(messages):
             "src_tbl": payload.get("src_tbl", ""),
             "failure_reason": payload.get("failure_reason", ""),
             "validation_feedback": payload.get("validation_feedback", {}),
+            "required_grain_expressions": payload.get("required_grain_expressions", []),
             "git_context": [],
         }
         git_context = payload.get("git_context")
@@ -864,6 +941,22 @@ def generate_rule_candidate_with_ai(database_name, table, failure_reason, git_ro
     if not dest_field_is_verified(parsed.get("dest_check_field"), table):
         meta["status"] = "ai_output_unverified_dest_field"
         meta["reason"] = f"AI 生成的目标字段未验证: {parsed.get('dest_check_field', '')}"
+        _ai_debug(meta["reason"])
+        return (None, meta) if return_meta else None
+
+    grain_hints = extract_required_grain_hints(git_context)
+    if grain_hints.get("expressions") and not source_sql_respects_required_grain(parsed.get("src_sql", ""), grain_hints):
+        meta["status"] = "ai_output_missing_required_grain"
+        meta["reason"] = (
+            "AI 生成的源 SQL 未体现 Git 去重粒度: " + ", ".join(grain_hints.get("expressions") or [])
+        )
+        _ai_debug(meta["reason"])
+        return (None, meta) if return_meta else None
+    if grain_hints.get("expressions") and not dest_sql_respects_required_grain(parsed.get("dest_sql", ""), grain_hints):
+        meta["status"] = "ai_output_missing_required_grain"
+        meta["reason"] = (
+            "AI 生成的目标 SQL 未体现 Git 去重粒度: " + ", ".join(grain_hints.get("expressions") or [])
+        )
         _ai_debug(meta["reason"])
         return (None, meta) if return_meta else None
 

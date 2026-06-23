@@ -159,6 +159,24 @@ def iter_git_candidate_files(git_roots, table_names):
         yield from fallback_matches
 
 
+def _strip_sql_identifier_quotes(value):
+    return str(value or "").replace("`", "").strip()
+
+
+def extract_primary_source_relation(text, dest_tbl):
+    target = re.escape(_strip_sql_identifier_quotes(dest_tbl).lower())
+    if not target:
+        return ""
+    pattern = re.compile(
+        rf"insert\s+(?:overwrite|into)\s+(?:table\s+)?(?:`?[a-zA-Z0-9_]+`?\.)?`?{target}`?.*?from\s+([`a-zA-Z0-9_\.]+)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(str(text or ""))
+    if not match:
+        return ""
+    return _strip_sql_identifier_quotes(match.group(1))
+
+
 def infer_git_rule_hints(dest_tbl, src_tbl=None, git_roots=None):
     git_roots = list(git_roots or [])
     if not git_roots:
@@ -169,6 +187,7 @@ def infer_git_rule_hints(dest_tbl, src_tbl=None, git_roots=None):
         table_names.append(src_tbl)
 
     upstream_candidates = []
+    primary_source_candidates = []
     check_field_candidates = []
     scanned_paths = []
     complexity_reasons = []
@@ -185,6 +204,10 @@ def infer_git_rule_hints(dest_tbl, src_tbl=None, git_roots=None):
         if dest_tbl.lower() not in lower_text and (not src_tbl or src_tbl.lower() not in lower_text):
             continue
         scanned_paths.append(str(path))
+
+        primary_source = extract_primary_source_relation(text, dest_tbl)
+        if primary_source:
+            primary_source_candidates.append(primary_source)
 
         for match in from_pattern.findall(text):
             candidate = match.strip("`")
@@ -208,7 +231,9 @@ def infer_git_rule_hints(dest_tbl, src_tbl=None, git_roots=None):
                 complexity_reasons.append(label)
 
     result = {}
-    if upstream_candidates:
+    if primary_source_candidates:
+        result["dep_tbls"] = [primary_source_candidates[0]]
+    elif upstream_candidates:
         result["dep_tbls"] = [upstream_candidates[0]]
     if check_field_candidates:
         for preferred in CHECK_FIELD_CANDIDATES:

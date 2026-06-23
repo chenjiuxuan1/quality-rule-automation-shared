@@ -1,5 +1,6 @@
 import json
 import sys
+import tempfile
 import types
 import unittest
 from datetime import datetime
@@ -183,6 +184,109 @@ class QualityRuleAiHelperTests(unittest.TestCase):
             self.assertIsNone(result)
             self.assertEqual(meta["status"], "ai_output_unverified_source_field")
             self.assertTrue(meta.get("draft_candidate"))
+        finally:
+            module.QUALITY_RULE_AI_CONFIG.clear()
+            module.QUALITY_RULE_AI_CONFIG.update(original)
+
+
+    def test_build_ai_messages_includes_required_grain_expressions(self):
+        messages = module.build_ai_messages(
+            "dwd",
+            {
+                "tbl": "dwd_app_can_loan",
+                "dest_tbl": "dwd_app_can_loan",
+                "src_tbl": "dwb_c_can_loan",
+                "dest_columns": ["can_loan_create_at", "can_loan_user_id"],
+                "source_columns": ["can_loan_id", "can_loan_user_id", "can_loan_create_at"],
+            },
+            [
+                {
+                    "path": "/tmp/dwd_app_can_loan.sql",
+                    "snippet": """
+                    select row_number() over (
+                        partition by can_loan_user_id, date(can_loan_create_at)
+                        order by can_loan_create_at
+                    ) as row_num
+                    from hive.dwb_paimon.dwb_c_can_loan
+                    """,
+                }
+            ],
+            "complex lineage",
+        )
+
+        payload = json.loads(messages[1]["content"])
+        self.assertEqual(
+            payload["required_grain_expressions"],
+            ["can_loan_user_id", "date(can_loan_create_at)"],
+        )
+
+    def test_generate_rule_candidate_with_ai_rejects_missing_required_grain(self):
+        original = dict(module.QUALITY_RULE_AI_CONFIG)
+        try:
+            module.QUALITY_RULE_AI_CONFIG.update(
+                {
+                    "enabled": True,
+                    "api_key": "dashscope-key",
+                    "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "model": "qwen3.6-plus",
+                    "langfuse_secret_key": "secret",
+                    "langfuse_public_key": "public",
+                    "langfuse_base_url": "https://langfuse.kuainiu.io",
+                }
+            )
+
+            fake_completion = mock.Mock()
+            fake_completion.choices = [
+                mock.Mock(
+                    message=mock.Mock(
+                        content='{"src_db":"hive.dwb_paimon","src_tbl":"dwb_c_can_loan","src_check_field":"can_loan_create_at","dest_check_field":"can_loan_create_at","src_sql":"SELECT COUNT(DISTINCT can_loan_id) AS cnt FROM hive.dwb_paimon.dwb_c_can_loan WHERE can_loan_create_at >= \'{begin}\' AND can_loan_create_at < \'{end}\'","dest_sql":"SELECT COUNT(DISTINCT can_loan_id) AS cnt FROM dwd.dwd_app_can_loan WHERE can_loan_create_at >= \'{begin}\' AND can_loan_create_at < \'{end}\'","reason":"guessed grain"}'
+                    )
+                )
+            ]
+            fake_client = mock.Mock()
+            fake_client.chat.completions.create.return_value = fake_completion
+
+            fake_openai_module = types.ModuleType("openai")
+            fake_openai_module.OpenAI = mock.Mock(return_value=fake_client)
+
+            with tempfile.TemporaryDirectory() as temp_dir:
+                sql_path = Path(temp_dir) / "dwd_app_can_loan.sql"
+                sql_path.write_text(
+                    """
+                    insert into dwd.dwd_app_can_loan
+                    select *
+                    from (
+                        select can_loan_user_id,
+                               can_loan_create_at,
+                               row_number() over (
+                                   partition by can_loan_user_id, date(can_loan_create_at)
+                                   order by can_loan_create_at
+                               ) as row_num
+                        from hive.dwb_paimon.dwb_c_can_loan t
+                    ) a
+                    where row_num = 1
+                    """,
+                    encoding="utf-8",
+                )
+                with mock.patch.object(module, "maybe_trace_langfuse", return_value=True):
+                    with mock.patch.dict(sys.modules, {"openai": fake_openai_module}):
+                        result, meta = module.generate_rule_candidate_with_ai(
+                            "dwd",
+                            {
+                                "tbl": "dwd_app_can_loan",
+                                "dest_tbl": "dwd_app_can_loan",
+                                "src_tbl": "dwb_c_can_loan",
+                                "columns": '["can_loan_id","can_loan_user_id","can_loan_create_at"]',
+                                "dest_columns": '["can_loan_id","can_loan_user_id","can_loan_create_at"]',
+                            },
+                            "complex lineage",
+                            git_roots=[temp_dir],
+                            return_meta=True,
+                        )
+
+            self.assertIsNone(result)
+            self.assertEqual(meta["status"], "ai_output_missing_required_grain")
+            self.assertIn("can_loan_user_id", meta["reason"])
         finally:
             module.QUALITY_RULE_AI_CONFIG.clear()
             module.QUALITY_RULE_AI_CONFIG.update(original)
@@ -527,7 +631,7 @@ class QualityRuleAiHelperTests(unittest.TestCase):
         self.assertEqual(generation_payload["git_context"], [{"path": "/tmp/example.sql"}])
         self.assertEqual(
             sorted(trace_payload.keys()),
-            sorted(["task", "database", "dest_db", "dest_tbl", "src_db", "src_tbl", "failure_reason", "validation_feedback", "git_context"]),
+            sorted(["task", "database", "dest_db", "dest_tbl", "src_db", "src_tbl", "failure_reason", "validation_feedback", "required_grain_expressions", "git_context"]),
         )
 
     def test_build_langfuse_ingestion_batch_includes_token_usage(self):
