@@ -1839,66 +1839,49 @@ def build_exists_rule_candidate(database_name, table, rule_map, git_roots=None, 
 
     target_db = table["db"]
     target_check_field = infer_exists_target_check_field(table, git_roots=git_roots)
+    ai_table = enrich_ai_schema_context(
+        {
+            **table,
+            "dest_tbl": target_table,
+            "dest_db": target_db,
+            "check_field": target_check_field or table.get("check_field", ""),
+        },
+        cursor=cursor,
+    )
+    ai_reason = (
+        "ADS/ADS_SEC 报表表不再直接生成 if_exists/是否有数据 的快捷校验，"
+        "请基于真实业务字段生成可比较的校验 SQL，不要回退到 if_exists。"
+    )
     if not target_check_field:
-        ai_table = enrich_ai_schema_context(
-            {
-                **table,
-                "dest_tbl": target_table,
-                "dest_db": target_db,
-            },
-            cursor=cursor,
-        )
-        ai_reason = "无法可靠推断 ADS/ADS_SEC 的时间判定字段，已阻止使用 etl_create_time 兜底，请改走 AI 生成更合理的校验 SQL"
-        ai_candidate, ai_meta = call_ai_candidate(
+        ai_reason += " 当前也未能可靠推断可用于判定时间窗口的目标字段。"
+
+    ai_candidate, ai_meta = call_ai_candidate(
+        database_name,
+        ai_table,
+        ai_reason,
+        git_roots=git_roots,
+    )
+    if ai_candidate:
+        return finalize_candidate_with_validation(
             database_name,
-            ai_table,
-            ai_reason,
-            git_roots=git_roots,
-        )
-        if ai_candidate:
-            return finalize_candidate_with_validation(
-                database_name,
-                target_table,
-                target_db,
-                ai_candidate,
-                ai_table,
-                git_roots=git_roots,
-                cursor=cursor,
-                base_reason="快捷 if_exists 规则无法安全生成，已切换为 AI 生成",
-                ai_status=ai_meta.get("status", ""),
-            )
-        return blocked_result_with_ai_draft(
-            ai_table,
             target_table,
             target_db,
-            ai_meta,
-            "快捷 if_exists 规则无法安全生成，且 AI 未能补出可用 SQL",
-            rule_name=EXISTS_RULE_NAME,
+            ai_candidate,
+            ai_table,
+            git_roots=git_roots,
+            cursor=cursor,
+            base_reason="ADS/ADS_SEC 已切换为 AI 生成业务校验，避免直接生成 if_exists",
+            ai_status=ai_meta.get("status", ""),
         )
-
-    candidate = {
-        "name": EXISTS_RULE_NAME,
-        "desc": "是否存在",
-        "src_db": "",
-        "src_tbl": "",
-        "dest_db": target_db,
-        "dest_tbl": target_table,
-        "src_sql": "",
-        "dest_sql": (
-            f"select count(*) as if_exists from {quote_qualified_identifier(target_db)}.{quote_identifier(target_table)} "
-            f"where {quote_identifier(target_check_field)} >= DATE_SUB(CURRENT_DATE,INTERVAL 1 day);"
-        ),
-        "msg_template": EXISTS_MSG_TEMPLATE,
-        "check_field": target_check_field,
-    }
-    return {
-        "status": "candidate",
-        "rule_name": EXISTS_RULE_NAME,
-        "dest_tbl": target_table,
-        "dest_db": target_db,
-        "reason": "可自动生成 if_exists 规则",
-        "candidate": candidate,
-    }
+    return blocked_result_with_ai_draft(
+        ai_table,
+        target_table,
+        target_db,
+        ai_meta,
+        "ADS/ADS_SEC 不再直接生成 if_exists，且 AI 未能补出可用 SQL",
+        rule_name=EXISTS_RULE_NAME,
+        fallback={"check_field": target_check_field or ""},
+    )
 
 
 def scan_database_rules(cursor, database_name, monitor_level=None, git_roots=None):
