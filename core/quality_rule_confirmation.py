@@ -1004,7 +1004,14 @@ def remove_backlog_items(backlog, candidate_keys):
     return backlog
 
 
-def format_tv_apply_summary(applied_items, disabled_items, failed_items, processed_sheet_rows=None, sheet_delete_result=None):
+def format_tv_apply_summary(
+    applied_items,
+    disabled_items,
+    failed_items,
+    processed_sheet_rows=None,
+    sheet_delete_result=None,
+    confirmation_sheet_url="",
+):
     processed_sheet_rows = list(processed_sheet_rows or [])
     sheet_delete_result = sheet_delete_result or {}
     lines = ["📋 数据质量规则处理结果", ""]
@@ -1031,4 +1038,6 @@ def format_tv_apply_summary(applied_items, disabled_items, failed_items, process
             lines.append(f"• 未自动删除原因: {sheet_delete_result['reason']}")
         lines.append("")
     lines.append("请自行查看并按需调整。")
+    if confirmation_sheet_url:
+        lines.append(f"确认报表: {confirmation_sheet_url}")
     return "\n".join(lines)

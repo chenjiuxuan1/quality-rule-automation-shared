@@ -258,6 +258,19 @@ class QualityRuleConfirmationTests(unittest.TestCase):
         self.assertIn("https://docs.google.com/spreadsheets/d/test/edit#gid=1", message)
         self.assertIn("确认响应表", message)
 
+    def test_format_tv_apply_summary_includes_confirmation_sheet_url(self):
+        module, _ = load_module()
+
+        message = module.format_tv_apply_summary(
+            [{"country": "ph", "database": "dwd", "dest_tbl": "dwd_asset_main"}],
+            [],
+            [],
+            confirmation_sheet_url="https://docs.google.com/spreadsheets/d/test/edit#gid=1",
+        )
+
+        self.assertIn("确认报表", message)
+        self.assertIn("https://docs.google.com/spreadsheets/d/test/edit#gid=1", message)
+
     def test_submit_google_form_returns_structured_failure_on_http_error(self):
         module, _ = load_module()
         http_error = urllib.error.HTTPError(

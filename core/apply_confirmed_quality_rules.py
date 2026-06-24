@@ -197,6 +197,7 @@ def main():
         validation_failed,
         processed_sheet_rows=processed_sheet_rows,
         sheet_delete_result=sheet_delete_result,
+        confirmation_sheet_url=QUALITY_RULE_FORM_CONFIG.get("confirmation_sheet_url", ""),
     )
     if applied_items or disabled_items or validation_failed:
         from core.send_tv_report import send_tv_report
