@@ -18,7 +18,11 @@ from core.quality_rule_confirmation import (
     infer_database_from_row,
     parse_confirmation_rows,
 )
-from core.quality_rule_gap_scanner import list_pending_generation_tables, scan_quality_rule_gaps
+from core.quality_rule_gap_scanner import (
+    list_existing_rule_table_keys,
+    list_pending_generation_tables,
+    scan_quality_rule_gaps,
+)
 
 
 def parse_args():
@@ -85,7 +89,20 @@ def filter_existing_confirmation_rows(items, confirmation_rows):
     return filtered
 
 
-def extract_manual_pending_rows(confirmation_rows, target_country):
+def filter_items_with_existing_rules(items, existing_rule_keys):
+    if not items or not existing_rule_keys:
+        return items
+    filtered = []
+    for item in items:
+        key = ((item.get("database") or "").strip().lower(), (item.get("tbl") or "").strip())
+        if key in existing_rule_keys:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def extract_manual_pending_rows(confirmation_rows, target_country, existing_rule_keys=None):
+    existing_rule_keys = existing_rule_keys or set()
     manual_items = []
     for row in confirmation_rows:
         row_country = str(
@@ -98,6 +115,8 @@ def extract_manual_pending_rows(confirmation_rows, target_country):
         tbl = (row.get("tbl") or row.get("dest_tbl") or "").strip()
         database = infer_database_from_row(row, country=row_country)
         if not database or not tbl:
+            continue
+        if (database.strip().lower(), tbl) in existing_rule_keys:
             continue
         if confirmation_row_has_submittable_sql(row):
             continue
@@ -173,10 +192,12 @@ def main():
 
     confirmation_rows = load_confirmation_rows()
     target_country = str(QUALITY_RULE_FORM_CONFIG.get("country", "ph")).strip().lower()
+    existing_rule_keys = list_existing_rule_table_keys(databases=databases)
     items = filter_existing_confirmation_rows(items, confirmation_rows)
+    items = filter_items_with_existing_rules(items, existing_rule_keys)
     items = merge_pending_items(
         items,
-        extract_manual_pending_rows(confirmation_rows, target_country),
+        extract_manual_pending_rows(confirmation_rows, target_country, existing_rule_keys=existing_rule_keys),
     )
 
     if args.json:

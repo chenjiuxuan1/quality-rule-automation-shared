@@ -40,6 +40,7 @@ def load_module():
 
     fake_gap_scanner = types.ModuleType("core.quality_rule_gap_scanner")
     fake_gap_scanner.list_pending_generation_tables = mock.MagicMock(return_value=[])
+    fake_gap_scanner.list_existing_rule_table_keys = mock.MagicMock(return_value=set())
     fake_gap_scanner.scan_quality_rule_gaps = mock.MagicMock(return_value=[])
 
     previous_modules = {
@@ -177,6 +178,44 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
                     "requested_metric_field": "",
                 }
             ],
+        )
+
+    def test_extract_manual_pending_rows_skips_table_when_rule_already_exists_in_db(self):
+        module = load_module()
+        confirmation_rows = [
+            {
+                "country": "ph",
+                "database": "dwd",
+                "tbl": "dwd_app_can_loan",
+                "auto_generate": "1",
+                "src_sql": "",
+                "dest_sql": "",
+            }
+        ]
+        module.confirmation_row_has_submittable_sql = mock.MagicMock(return_value=False)
+
+        results = module.extract_manual_pending_rows(
+            confirmation_rows,
+            "ph",
+            existing_rule_keys={("dwd", "dwd_app_can_loan")},
+        )
+
+        self.assertEqual(results, [])
+
+    def test_filter_items_with_existing_rules_skips_scanned_item(self):
+        module = load_module()
+
+        results = module.filter_items_with_existing_rules(
+            [
+                {"database": "dwd", "tbl": "dwd_app_can_loan", "status": "pending_generation"},
+                {"database": "dwd", "tbl": "dwd_user_member_log", "status": "pending_generation"},
+            ],
+            {("dwd", "dwd_app_can_loan")},
+        )
+
+        self.assertEqual(
+            results,
+            [{"database": "dwd", "tbl": "dwd_user_member_log", "status": "pending_generation"}],
         )
 
     def test_extract_manual_pending_rows_infers_database_when_sheet_leaves_it_blank(self):

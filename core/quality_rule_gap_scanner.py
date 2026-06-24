@@ -1141,6 +1141,31 @@ def load_quality_rules(cursor, dest_db):
     return rule_map
 
 
+def list_existing_rule_table_keys(databases=None):
+    databases = tuple(databases or SUPPORTED_DATABASES)
+    if not databases:
+        return set()
+    placeholders = ", ".join(["%s"] * len(databases))
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            rows = fetch_rows(
+                cursor,
+                f"SELECT DISTINCT dest_db, dest_tbl FROM wattrel_quality_setting WHERE dest_db IN ({placeholders})",
+                tuple(databases),
+            )
+    finally:
+        conn.close()
+
+    result = set()
+    for row in rows or []:
+        dest_db = str(row.get("dest_db") or "").strip().lower()
+        dest_tbl = str(row.get("dest_tbl") or "").strip()
+        if dest_db and dest_tbl:
+            result.add((dest_db, dest_tbl))
+    return result
+
+
 def normalize_sql_text(value):
     return str(value or "").strip().lower()
 
