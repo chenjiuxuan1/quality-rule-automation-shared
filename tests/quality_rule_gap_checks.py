@@ -160,6 +160,90 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertEqual(result["rule_name"], "sum_total_cost")
         self.assertEqual(result["reason"], "已存在相关校验规则")
 
+    def test_infer_existing_rule_kind_prefers_count_for_multi_statement_min_id_rules(self):
+        module = load_module()
+        rule = {
+            "name": "",
+            "desc": "总数",
+            "src_sql": "SET @min_id = IFNULL((SELECT MIN(asset_decrease_id) FROM `dwd`.`dwd_asset_decrease` WHERE asset_decrease_create_at >= '{begin}' AND asset_decrease_create_at < '{end}'), 0); SELECT COUNT(1) AS cnt FROM `ods`.`ods_repay_asset_decrease` WHERE asset_decrease_id >= @min_id AND asset_decrease_create_at >= '{begin}' AND asset_decrease_create_at < '{end}'",
+            "dest_sql": "SELECT COUNT(1) AS cnt FROM `dwd`.`dwd_asset_decrease` WHERE asset_decrease_create_at >= '{begin}' AND asset_decrease_create_at < '{end}'",
+        }
+
+        self.assertEqual(module.infer_existing_rule_kind(rule), "count")
+
+    def test_build_count_rule_candidate_treats_existing_min_id_count_rule_as_existing(self):
+        module = load_module()
+        table = {"db": "dwd", "tbl": "dwd_asset_decrease"}
+        rule_map = {
+            "dwd_asset_decrease": {
+                "legacy_count_rule": {
+                    "name": "",
+                    "desc": "总数",
+                    "dest_db": "dwd",
+                    "dest_tbl": "dwd_asset_decrease",
+                    "src_db": "ods",
+                    "src_tbl": "ods_repay_asset_decrease",
+                    "check_field": "asset_decrease_create_at",
+                    "src_sql": "SET @min_id = IFNULL((SELECT MIN(asset_decrease_id) FROM `dwd`.`dwd_asset_decrease` WHERE asset_decrease_create_at >= '{begin}' AND asset_decrease_create_at < '{end}'), 0); SELECT COUNT(1) AS cnt FROM `ods`.`ods_repay_asset_decrease` WHERE asset_decrease_id >= @min_id AND asset_decrease_create_at >= '{begin}' AND asset_decrease_create_at < '{end}'",
+                    "dest_sql": "SELECT COUNT(1) AS cnt FROM `dwd`.`dwd_asset_decrease` WHERE asset_decrease_create_at >= '{begin}' AND asset_decrease_create_at < '{end}'",
+                }
+            }
+        }
+
+        result = module.build_count_rule_candidate("dwd", table, rule_map, {})
+
+        self.assertEqual(result["status"], "existing")
+        self.assertEqual(result["reason"], "已存在相关校验规则")
+
+    def test_load_quality_rules_reads_existing_alias_tables(self):
+        fake_cursor = FakeCursor(
+            [
+                [{"table_name": "wattrel_quality_setting"}, {"table_name": "wattrel_table_quality_setting"}],
+                [
+                    {
+                        "name": "cnt",
+                        "dest_db": "dwd",
+                        "dest_tbl": "dwd_user_log",
+                        "src_db": "ods",
+                        "src_tbl": "ods_user_log",
+                    }
+                ],
+                [
+                    {
+                        "name": "sum_total_cost",
+                        "dest_db": "dwd",
+                        "dest_tbl": "dwd_user_log",
+                        "src_db": "ods",
+                        "src_tbl": "ods_user_log",
+                    }
+                ],
+            ]
+        )
+        module = load_module()
+
+        rules = module.load_quality_rules(fake_cursor, "dwd")
+
+        self.assertIn("dwd_user_log", rules)
+        self.assertIn("cnt", rules["dwd_user_log"])
+        self.assertIn("sum_total_cost", rules["dwd_user_log"])
+        self.assertEqual(len(fake_cursor.executed), 3)
+
+    def test_list_existing_rule_table_keys_merges_all_existing_quality_setting_tables(self):
+        fake_cursor = FakeCursor(
+            [
+                [{"table_name": "wattrel_quality_setting"}, {"table_name": "wattrel_table_quality_setting"}],
+                [{"dest_db": "dwd", "dest_tbl": "dwd_user_log"}],
+                [{"dest_db": "ods", "dest_tbl": "ods_user_log"}],
+            ]
+        )
+        fake_conn = FakeConnection(fake_cursor)
+        module = load_module(fake_get_db_connection=mock.MagicMock(return_value=fake_conn))
+
+        result = module.list_existing_rule_table_keys(["dwd", "ods"])
+
+        self.assertEqual(result, {("dwd", "dwd_user_log"), ("ods", "ods_user_log")})
+        self.assertTrue(fake_conn.closed)
+
     def test_build_count_rule_candidate_does_not_treat_metric_rule_as_existing_for_default_count(self):
         module = load_module()
         table = {
@@ -1631,6 +1715,7 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
                     {"id": 1, "db": "dwd", "tbl": "dwd_has_rule", "dep_tbls": json.dumps(["ods_has_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                     {"id": 2, "db": "dwd", "tbl": "dwd_needs_rule", "dep_tbls": json.dumps(["ods_needs_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                 ],
+                [{"table_name": "wattrel_quality_setting"}],
                 [
                     {"dest_db": "dwd", "dest_tbl": "dwd_has_rule", "name": "cnt"},
                 ],
@@ -1763,6 +1848,7 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
                     {"dest_db": "ods", "dest_tbl": "ods_partitioned", "pk": "id", "dest_tbl_partition_field": "dt", "monitor_level": 1},
                     {"dest_db": "ods", "dest_tbl": "ods_ok", "src_tbl": "ok", "src_db_id": 1, "pk": "id", "dest_tbl_partition_field": None, "columns": json.dumps(["id", "created_at"]), "monitor_level": 2},
                 ],
+                [{"table_name": "wattrel_quality_setting"}],
                 [],
                 [],
                 [
@@ -1904,9 +1990,37 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
         self.assertTrue(fake_conn.committed)
         self.assertEqual(len(fake_cursor.executed), 1)
         insert_sql, params = fake_cursor.executed[0]
-        self.assertIn("INSERT INTO wattrel_quality_setting", insert_sql)
+        self.assertIn("INSERT INTO `wattrel_quality_setting`", insert_sql)
         self.assertEqual(params[0], "cnt")
         self.assertEqual(params[5], "dwd_user_member_log")
+
+    def test_apply_candidates_uses_configured_primary_quality_setting_table(self):
+        fake_cursor = FakeCursor([[]])
+        fake_conn = FakeConnection(fake_cursor)
+        module = load_module(fake_get_db_connection=mock.MagicMock(return_value=fake_conn))
+        module.TABLE_CONFIG["quality_setting_table"] = "wattrel_table_quality_setting"
+        results = [
+            {
+                "status": "candidate",
+                "candidate": {
+                    "name": "cnt",
+                    "desc": "总数",
+                    "src_db": "ods",
+                    "src_tbl": "ods_user_member_log",
+                    "dest_db": "dwd",
+                    "dest_tbl": "dwd_user_member_log",
+                    "src_sql": "select 1",
+                    "dest_sql": "select 2",
+                    "msg_template": "tpl",
+                },
+            }
+        ]
+
+        applied = module.apply_candidates(results)
+
+        self.assertEqual(applied, 1)
+        insert_sql, _ = fake_cursor.executed[0]
+        self.assertIn("INSERT INTO `wattrel_table_quality_setting`", insert_sql)
 
     def test_apply_candidates_sanitizes_unescaped_braces_before_insert(self):
         fake_cursor = FakeCursor([[], []])

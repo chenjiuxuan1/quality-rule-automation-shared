@@ -5,8 +5,8 @@ Scan wattrel metadata for auto-generated quality rules that are missing today.
 This mirrors wattrel's own rule-generation scope and decision tree without
 modifying wattrel code. In dry-run mode it reports which rules already exist,
 which ones can be auto-generated, and which ones are still blocked by missing
-metadata. In apply mode it inserts the generated rules into
-`wattrel_quality_setting`.
+metadata. In apply mode it inserts the generated rules into the configured
+quality-setting table.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from alert.db_config import get_db_connection
-from config.config import QUALITY_RULE_FORM_CONFIG, QUALITY_RULE_VALIDATION_CONFIG, TABLE_CONFIG
+from config.config import DB_CONFIG, QUALITY_RULE_FORM_CONFIG, QUALITY_RULE_VALIDATION_CONFIG, TABLE_CONFIG
 from core.quality_rule_ai_helper import generate_rule_candidate_with_ai
 
 
@@ -77,6 +77,7 @@ MISSING_RULE_ALERT_PATTERNS = (
     "校验规则源数据库未获取到",
     "请手动添加",
 )
+SAFE_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def resolve_rule_name(database_name):
@@ -623,6 +624,13 @@ def fetch_rows(cursor, sql, params=None):
     return cursor.fetchall()
 
 
+def _safe_table_identifier(value, *, label="table"):
+    text = str(value or "").strip()
+    if not text or not SAFE_SQL_IDENTIFIER.match(text):
+        raise ValueError(f"非法{label}名: {value!r}")
+    return text
+
+
 def _escape_identifier(value):
     return str(value or "").replace("`", "``")
 
@@ -1135,11 +1143,16 @@ def load_ods_db_by_id(cursor):
 
 
 def load_quality_rules(cursor, dest_db):
-    rows = fetch_rows(
-        cursor,
-        "SELECT * FROM wattrel_quality_setting WHERE dest_db = %s",
-        (dest_db,),
-    )
+    rows = []
+    for table_name in resolve_quality_setting_tables(cursor):
+        sql_table = _safe_table_identifier(table_name, label="质量规则表")
+        rows.extend(
+            fetch_rows(
+                cursor,
+                f"SELECT * FROM `{sql_table}` WHERE dest_db = %s",
+                (dest_db,),
+            )
+        )
     rule_map = {}
     for row in rows:
         rule_map.setdefault(row.get("dest_tbl"), {})[row.get("name")] = row
@@ -1154,11 +1167,16 @@ def list_existing_rule_table_keys(databases=None):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
-            rows = fetch_rows(
-                cursor,
-                f"SELECT DISTINCT dest_db, dest_tbl FROM wattrel_quality_setting WHERE dest_db IN ({placeholders})",
-                tuple(databases),
-            )
+            rows = []
+            for table_name in resolve_quality_setting_tables(cursor):
+                sql_table = _safe_table_identifier(table_name, label="质量规则表")
+                rows.extend(
+                    fetch_rows(
+                        cursor,
+                        f"SELECT DISTINCT dest_db, dest_tbl FROM `{sql_table}` WHERE dest_db IN ({placeholders})",
+                        tuple(databases),
+                    )
+                )
     finally:
         conn.close()
 
@@ -1169,6 +1187,57 @@ def list_existing_rule_table_keys(databases=None):
         if dest_db and dest_tbl:
             result.add((dest_db, dest_tbl))
     return result
+
+
+def primary_quality_setting_table():
+    return _safe_table_identifier(
+        TABLE_CONFIG.get("quality_setting_table", "wattrel_quality_setting"),
+        label="主质量规则表",
+    )
+
+
+def configured_quality_setting_tables():
+    configured = TABLE_CONFIG.get("quality_setting_read_tables") or []
+    candidates = [
+        TABLE_CONFIG.get("quality_setting_table", "wattrel_quality_setting"),
+        *configured,
+        "wattrel_quality_setting",
+        "wattrel_table_quality_setting",
+    ]
+    result = []
+    seen = set()
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text or text in seen:
+            continue
+        result.append(_safe_table_identifier(text, label="质量规则表"))
+        seen.add(text)
+    return result
+
+
+def resolve_quality_setting_tables(cursor):
+    candidates = configured_quality_setting_tables()
+    if not candidates:
+        return [primary_quality_setting_table()]
+
+    placeholders = ", ".join(["%s"] * len(candidates))
+    rows = fetch_rows(
+        cursor,
+        f"""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = %s
+          AND table_name IN ({placeholders})
+        """,
+        tuple([DB_CONFIG["database"], *candidates]),
+    )
+    existing = {
+        str(row.get("table_name") or row.get("TABLE_NAME") or "").strip()
+        for row in (rows or [])
+        if str(row.get("table_name") or row.get("TABLE_NAME") or "").strip()
+    }
+    resolved = [table_name for table_name in candidates if table_name in existing]
+    return resolved or [primary_quality_setting_table()]
 
 
 def normalize_sql_text(value):
@@ -1184,16 +1253,19 @@ def sql_mentions_field(sql_text, field_name):
 
 def infer_existing_rule_kind(rule):
     rule_name = (rule.get("name") or "").strip().lower()
+    rule_desc = str(rule.get("desc") or "").strip()
     src_sql = normalize_sql_text(rule.get("src_sql"))
     dest_sql = normalize_sql_text(rule.get("dest_sql"))
     combined_sql = f"{src_sql}\n{dest_sql}"
 
     if rule_name == EXISTS_RULE_NAME or " as if_exists" in combined_sql:
         return "if_exists"
-    if "sum(" in combined_sql or "avg(" in combined_sql or "max(" in combined_sql or "min(" in combined_sql:
-        return "metric"
+    if "总数" in rule_desc:
+        return "count"
     if "count(" in combined_sql:
         return "count"
+    if "sum(" in combined_sql or "avg(" in combined_sql or "max(" in combined_sql or "min(" in combined_sql:
+        return "metric"
     if rule_name == COUNT_RULE_NAME:
         return "count"
     return "metric"
@@ -2336,10 +2408,11 @@ def apply_candidates(results):
     conn = get_db_connection()
     try:
         with conn.cursor() as cursor:
+            quality_setting_table = primary_quality_setting_table()
             for candidate in candidates:
                 cursor.execute(
-                    """
-                    INSERT INTO wattrel_quality_setting
+                    f"""
+                    INSERT INTO `{quality_setting_table}`
                     (name, `desc`, src_db, src_tbl, dest_db, dest_tbl, src_sql, dest_sql, msg_template)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
@@ -2569,7 +2642,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Insert auto-generatable rules into wattrel_quality_setting.",
+        help="Insert auto-generatable rules into the configured quality-setting table.",
     )
     parser.add_argument(
         "--git-roots",
@@ -2596,7 +2669,7 @@ def main(argv=None):
 
     if args.apply:
         applied = apply_candidates(results)
-        print(f"已写入 {applied} 条候选规则到 wattrel_quality_setting")
+        print(f"已写入 {applied} 条候选规则到 {primary_quality_setting_table()}")
 
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=2, default=json_default))

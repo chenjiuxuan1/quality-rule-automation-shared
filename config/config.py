@@ -200,6 +200,10 @@ OPENCLAW_CONFIG = {
 TABLE_CONFIG = {
     "quality_result_table": _get_env("QUALITY_RESULT_TABLE", "wattrel_quality_result"),
     "quality_alert_table": _get_env("QUALITY_ALERT_TABLE", "wattrel_quality_alert"),
+    "quality_setting_table": _get_env("QUALITY_SETTING_TABLE", "wattrel_quality_setting"),
+    "quality_setting_read_tables": json.loads(
+        _get_env("QUALITY_SETTING_READ_TABLES_JSON", '["wattrel_quality_setting", "wattrel_table_quality_setting"]')
+    ),
 }
 
 
