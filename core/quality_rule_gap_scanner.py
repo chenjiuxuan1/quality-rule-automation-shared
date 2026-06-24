@@ -1405,6 +1405,13 @@ def list_pending_generation_tables(databases=None, monitor_level=None):
                     target_table = table["dest_tbl"] if database_name in ("ods", "ods_security") else table["tbl"]
                     if alert_table_names and target_table not in alert_table_names:
                         continue
+                    # Auto backlog scanning is table-scoped, not rule-kind-scoped:
+                    # once the quality rule table already has any rule for the
+                    # target table, we should stop auto-generating more entries
+                    # for that table. Fine-grained metric-field generation still
+                    # happens in the explicit single-table/manual flow.
+                    if first_existing_rule(rule_map, target_table):
+                        continue
                     if database_name in EXISTS_RULE_DATABASES:
                         scan_result = build_exists_rule_candidate(
                             database_name,

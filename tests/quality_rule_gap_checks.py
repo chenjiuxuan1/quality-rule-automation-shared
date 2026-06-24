@@ -1745,7 +1745,7 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
             ],
         )
 
-    def test_list_pending_generation_tables_does_not_skip_when_only_metric_rule_exists(self):
+    def test_list_pending_generation_tables_skips_when_any_existing_rule_exists_for_same_table(self):
         fake_cursor = FakeCursor(
             [
                 [
@@ -1754,6 +1754,7 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
                 [
                     {"id": 1, "db": "dwd", "tbl": "dwd_has_metric_rule", "dep_tbls": json.dumps(["ods_has_metric_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                 ],
+                [{"table_name": "wattrel_quality_setting"}],
                 [
                     {
                         "dest_db": "dwd",
@@ -1773,20 +1774,7 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
 
         results = module.list_pending_generation_tables(databases=["dwd"])
 
-        self.assertEqual(
-            results,
-            [
-                {
-                    "database": "dwd",
-                    "tbl": "dwd_has_metric_rule",
-                    "dest_db": "dwd",
-                    "rule_name": "cnt",
-                    "status": "pending_generation",
-                    "reason": "告警库缺少该表相关校验语句，待进入自动生成",
-                    "monitor_level": 3,
-                }
-            ],
-        )
+        self.assertEqual(results, [])
 
     def test_list_pending_generation_tables_falls_back_to_metadata_when_alert_rows_missing(self):
         fake_cursor = FakeCursor(
