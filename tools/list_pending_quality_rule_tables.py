@@ -192,12 +192,14 @@ def main():
 
     confirmation_rows = load_confirmation_rows()
     target_country = str(QUALITY_RULE_FORM_CONFIG.get("country", "ph")).strip().lower()
-    existing_rule_keys = list_existing_rule_table_keys(databases=databases)
     items = filter_existing_confirmation_rows(items, confirmation_rows)
-    items = filter_items_with_existing_rules(items, existing_rule_keys)
     items = merge_pending_items(
         items,
-        extract_manual_pending_rows(confirmation_rows, target_country, existing_rule_keys=existing_rule_keys),
+        extract_manual_pending_rows(
+            confirmation_rows,
+            target_country,
+            existing_rule_keys=list_existing_rule_table_keys(databases=databases),
+        ),
     )
 
     if args.json:

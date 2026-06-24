@@ -202,7 +202,7 @@ class ListPendingQualityRuleTablesChecks(unittest.TestCase):
 
         self.assertEqual(results, [])
 
-    def test_filter_items_with_existing_rules_skips_scanned_item(self):
+    def test_filter_items_with_existing_rules_still_exists_for_manual_row_helpers(self):
         module = load_module()
 
         results = module.filter_items_with_existing_rules(
