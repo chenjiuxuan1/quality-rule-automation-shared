@@ -72,6 +72,11 @@ COMPLEX_LINEAGE_PATTERNS = (
     (re.compile(r"\bover\s*\(", re.IGNORECASE), "窗口函数"),
     (re.compile(r"\bnot\s+exists\b", re.IGNORECASE), "NOT EXISTS 反查"),
 )
+MISSING_RULE_ALERT_PATTERNS = (
+    "校验规则自动获取失败",
+    "校验规则源数据库未获取到",
+    "请手动添加",
+)
 
 
 def resolve_rule_name(database_name):
@@ -1255,6 +1260,45 @@ def load_recent_alert_tables(cursor, databases=None):
     return alert_tables
 
 
+def extract_table_names_from_alert_content(content):
+    text = str(content or "").strip()
+    if not text:
+        return set()
+    if not any(pattern in text for pattern in MISSING_RULE_ALERT_PATTERNS):
+        return set()
+
+    table_names = set()
+    for match in re.finditer(r"指标校验异常\s+([A-Za-z0-9_]+)", text):
+        table_name = (match.group(1) or "").strip()
+        if table_name:
+            table_names.add(table_name)
+    return table_names
+
+
+def load_recent_missing_rule_alert_table_names(cursor):
+    sql = f"""
+        SELECT content
+        FROM {TABLE_CONFIG['quality_alert_table']}
+        WHERE status = 0
+          AND created_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
+          AND (
+                content LIKE %s
+                OR content LIKE %s
+                OR content LIKE %s
+              )
+        ORDER BY created_at DESC
+    """
+    rows = fetch_rows(
+        cursor,
+        sql,
+        ("%校验规则自动获取失败%", "%校验规则源数据库未获取到%", "%请手动添加%"),
+    )
+    table_names = set()
+    for row in rows:
+        table_names.update(extract_table_names_from_alert_content(row.get("content")))
+    return table_names
+
+
 def load_tables(cursor, database_name, monitor_level=None):
     if database_name in ("ods", "ods_security"):
         sql = "SELECT * FROM wattrel_ods_table_settings WHERE dest_db = %s AND is_auto_check = 1"
@@ -1273,7 +1317,7 @@ def list_pending_generation_tables(databases=None, monitor_level=None):
     try:
         with conn.cursor() as cursor:
             items = []
-            alert_tables = load_recent_alert_tables(cursor, databases=databases)
+            alert_table_names = load_recent_missing_rule_alert_table_names(cursor)
             ods_table_by_dest = None
             ods_db_by_id = None
             for database_name in databases:
@@ -1287,7 +1331,7 @@ def list_pending_generation_tables(databases=None, monitor_level=None):
                         ods_db_by_id = load_ods_db_by_id(cursor)
                 for table in tables:
                     target_table = table["dest_tbl"] if database_name in ("ods", "ods_security") else table["tbl"]
-                    if (database_name, target_table) not in alert_tables:
+                    if alert_table_names and target_table not in alert_table_names:
                         continue
                     if database_name in EXISTS_RULE_DATABASES:
                         scan_result = build_exists_rule_candidate(
