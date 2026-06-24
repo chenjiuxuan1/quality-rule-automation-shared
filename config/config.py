@@ -298,7 +298,7 @@ QUALITY_RULE_FORM_CONFIG = {
             ),
         )
     ),
-    "notify_bot_id": _get_env("QUALITY_RULE_NOTIFY_BOT_ID", "08826b39-e6eb-44fb-9c25-9778a8171f49"),
+    "notify_bot_id": _get_env("QUALITY_RULE_NOTIFY_BOT_ID", TV_CONFIG["bot_id"]),
     "notify_mentions": [
         item.strip()
         for item in _get_env("QUALITY_RULE_NOTIFY_MENTIONS", "").split(",")

@@ -164,6 +164,7 @@ class CountryConfigTests(unittest.TestCase):
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["field_map"]["src_sql"], "entry.625807972")
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["field_map"]["dest_sql"], "entry.817070984")
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["field_map"]["human_check"], "entry.943241897")
+        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"], module.TV_CONFIG["bot_id"])
 
     def test_quality_rule_validation_token_defaults_to_empty_in_shared_project(self):
         with mock.patch.dict(os.environ, {}, clear=True):
