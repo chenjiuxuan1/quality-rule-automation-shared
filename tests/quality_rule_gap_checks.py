@@ -1624,6 +1624,10 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
         fake_cursor = FakeCursor(
             [
                 [
+                    {"dest_db": "dwd", "dest_tbl": "dwd_has_rule", "src_db": "ods", "src_tbl": "ods_has_rule"},
+                    {"dest_db": "dwd", "dest_tbl": "dwd_needs_rule", "src_db": "ods", "src_tbl": "ods_needs_rule"},
+                ],
+                [
                     {"id": 1, "db": "dwd", "tbl": "dwd_has_rule", "dep_tbls": json.dumps(["ods_has_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                     {"id": 2, "db": "dwd", "tbl": "dwd_needs_rule", "dep_tbls": json.dumps(["ods_needs_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                 ],
@@ -1659,6 +1663,9 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
     def test_list_pending_generation_tables_does_not_skip_when_only_metric_rule_exists(self):
         fake_cursor = FakeCursor(
             [
+                [
+                    {"dest_db": "dwd", "dest_tbl": "dwd_has_metric_rule", "src_db": "ods", "src_tbl": "ods_has_metric_rule"},
+                ],
                 [
                     {"id": 1, "db": "dwd", "tbl": "dwd_has_metric_rule", "dep_tbls": json.dumps(["ods_has_metric_rule"]), "increment_field": "created_at", "check_field": "", "monitor_level": 3, "is_auto_check": 1},
                 ],
@@ -1696,9 +1703,10 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
             ],
         )
 
-    def test_list_pending_generation_tables_includes_missing_rule_tables_without_alert_rows(self):
+    def test_list_pending_generation_tables_skips_missing_rule_tables_without_alert_rows(self):
         fake_cursor = FakeCursor(
             [
+                [],
                 [
                     {
                         "id": 1,
@@ -1727,24 +1735,16 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
 
         results = module.list_pending_generation_tables(databases=["dwd"])
 
-        self.assertEqual(
-            results,
-            [
-                {
-                    "database": "dwd",
-                    "tbl": "dwd_user_member_log",
-                    "dest_db": "dwd",
-                    "rule_name": "cnt",
-                    "status": "pending_generation",
-                    "reason": "告警库缺少该表相关校验语句，待进入自动生成",
-                    "monitor_level": 1,
-                }
-            ],
-        )
+        self.assertEqual(results, [])
 
     def test_list_pending_generation_tables_skips_ineligible_ods_tables(self):
         fake_cursor = FakeCursor(
             [
+                [
+                    {"dest_db": "ods", "dest_tbl": "ods_no_pk", "src_db": "ods", "src_tbl": "ods_no_pk"},
+                    {"dest_db": "ods", "dest_tbl": "ods_partitioned", "src_db": "ods", "src_tbl": "ods_partitioned"},
+                    {"dest_db": "ods", "dest_tbl": "ods_ok", "src_db": "ods", "src_tbl": "ods_ok"},
+                ],
                 [
                     {"dest_db": "ods", "dest_tbl": "ods_no_pk", "pk": None, "dest_tbl_partition_field": None, "monitor_level": 1},
                     {"dest_db": "ods", "dest_tbl": "ods_partitioned", "pk": "id", "dest_tbl_partition_field": "dt", "monitor_level": 1},
@@ -1780,6 +1780,9 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
     def test_list_pending_generation_tables_includes_blocked_tables_when_rule_cannot_be_built(self):
         fake_cursor = FakeCursor(
             [
+                [
+                    {"dest_db": "dwd", "dest_tbl": "dwd_missing_dep", "src_db": "ods", "src_tbl": "ods_missing_dep"},
+                ],
                 [
                     {
                         "id": 1,

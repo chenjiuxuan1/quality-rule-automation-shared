@@ -1236,6 +1236,7 @@ def load_recent_alert_tables(cursor, databases=None):
         FROM {TABLE_CONFIG['quality_result_table']}
         WHERE result = 1
           AND is_repaired = 0
+          AND created_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
           AND (
                 dest_db IN ({placeholders})
                 OR src_db IN ({placeholders})
@@ -1245,11 +1246,12 @@ def load_recent_alert_tables(cursor, databases=None):
     rows = fetch_rows(cursor, sql, params)
     alert_tables = set()
     for row in rows:
-        db_name = (row.get("dest_db") or row.get("src_db") or "").strip()
-        tbl_name = (row.get("dest_tbl") or row.get("src_tbl") or "").strip()
-        if not db_name or not tbl_name:
-            continue
-        alert_tables.add((db_name, tbl_name))
+        for db_field, tbl_field in (("dest_db", "dest_tbl"), ("src_db", "src_tbl")):
+            db_name = (row.get(db_field) or "").strip()
+            tbl_name = (row.get(tbl_field) or "").strip()
+            if not db_name or not tbl_name:
+                continue
+            alert_tables.add((db_name, tbl_name))
     return alert_tables
 
 
@@ -1271,6 +1273,7 @@ def list_pending_generation_tables(databases=None, monitor_level=None):
     try:
         with conn.cursor() as cursor:
             items = []
+            alert_tables = load_recent_alert_tables(cursor, databases=databases)
             ods_table_by_dest = None
             ods_db_by_id = None
             for database_name in databases:
@@ -1284,6 +1287,8 @@ def list_pending_generation_tables(databases=None, monitor_level=None):
                         ods_db_by_id = load_ods_db_by_id(cursor)
                 for table in tables:
                     target_table = table["dest_tbl"] if database_name in ("ods", "ods_security") else table["tbl"]
+                    if (database_name, target_table) not in alert_tables:
+                        continue
                     if database_name in EXISTS_RULE_DATABASES:
                         scan_result = build_exists_rule_candidate(
                             database_name,
