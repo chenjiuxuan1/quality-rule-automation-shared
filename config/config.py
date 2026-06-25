@@ -57,6 +57,21 @@ def _require_env(name, help_text):
     return value
 
 
+QUALITY_RULE_NOTIFY_BOT_ID_BY_COUNTRY = {
+    "cn": "fbbcabb4-d187-4d9e-8e1e-ba7654a24d1c",
+    "ph": "14470d0e-73e2-4411-9306-4cea9a371264",
+    "th": "5fae7d84-eb55-4b57-9ba3-fd44209a82a1",
+    "ine": "fccd2880-baea-42aa-9631-a74ac5d951eb",
+    "pk": "dc751f2d-d626-4ab9-8a96-c042808c6dce",
+    "mx": "163ad872-4b4d-4493-8ec7-838f8eb9848d",
+}
+
+
+def _default_quality_rule_notify_bot_id():
+    country = (_get_env("QUALITY_RULE_FORM_COUNTRY", "ph") or "ph").strip().lower()
+    return QUALITY_RULE_NOTIFY_BOT_ID_BY_COUNTRY.get(country, os.environ.get("TV_BOT_ID", ""))
+
+
 def _load_fuyan_workflows():
     raw = _get_env("FUYAN_WORKFLOWS_JSON")
     if raw:
@@ -302,10 +317,7 @@ QUALITY_RULE_FORM_CONFIG = {
             ),
         )
     ),
-    "notify_bot_id": _get_env(
-        "QUALITY_RULE_NOTIFY_BOT_ID",
-        os.environ.get("TV_BOT_ID", ""),
-    ),
+    "notify_bot_id": _get_env("QUALITY_RULE_NOTIFY_BOT_ID", _default_quality_rule_notify_bot_id()),
     "notify_mentions": [
         item.strip()
         for item in _get_env("QUALITY_RULE_NOTIFY_MENTIONS", "").split(",")

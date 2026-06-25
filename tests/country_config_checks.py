@@ -164,13 +164,23 @@ class CountryConfigTests(unittest.TestCase):
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["field_map"]["src_sql"], "entry.625807972")
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["field_map"]["dest_sql"], "entry.817070984")
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["field_map"]["human_check"], "entry.943241897")
-        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"], "")
+        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"], "14470d0e-73e2-4411-9306-4cea9a371264")
 
-    def test_quality_rule_notify_bot_id_falls_back_only_to_explicit_tv_bot_env(self):
-        with mock.patch.dict(os.environ, {"TV_BOT_ID": "country-tv-bot"}, clear=True):
+    def test_quality_rule_notify_bot_id_uses_country_specific_default(self):
+        with mock.patch.dict(os.environ, {"QUALITY_RULE_FORM_COUNTRY": "th"}, clear=True):
             module = load_module()
 
-        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"], "country-tv-bot")
+        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"], "5fae7d84-eb55-4b57-9ba3-fd44209a82a1")
+
+    def test_quality_rule_notify_bot_id_allows_explicit_env_override(self):
+        env = {
+            "QUALITY_RULE_FORM_COUNTRY": "th",
+            "QUALITY_RULE_NOTIFY_BOT_ID": "override-bot-id",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            module = load_module()
+
+        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"], "override-bot-id")
 
     def test_quality_rule_validation_token_defaults_to_empty_in_shared_project(self):
         with mock.patch.dict(os.environ, {}, clear=True):
