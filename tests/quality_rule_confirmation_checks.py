@@ -346,6 +346,74 @@ class QualityRuleConfirmationTests(unittest.TestCase):
         self.assertEqual(result["status"], None)
         self.assertIn("build_form_payload_failed", result["error"])
 
+    def test_build_confirmation_sheet_row_maps_to_sheet_headers(self):
+        module, _ = load_module()
+
+        row = module.build_confirmation_sheet_row(
+            {
+                "country": "cn",
+                "database": "dwd",
+                "tbl": "dwd_demo",
+                "need_apply": "1",
+                "auto_generate": "1",
+                "metric_field": "created_at",
+                "candidate_key": "dwd::dwd.dwd_demo::cnt",
+                "src_sql": "select 1",
+                "dest_sql": "select 2",
+                "human_check": "0",
+                "submitter": "codex",
+                "notes": "need review",
+            },
+            submitted_at="2026-06-25 18:00:00",
+        )
+
+        self.assertEqual(row["Timestamp"], "2026-06-25 18:00:00")
+        self.assertEqual(row["country"], "cn")
+        self.assertEqual(row["database"], "dwd")
+        self.assertEqual(row["tbl"], "dwd_demo")
+        self.assertEqual(row["candidate_key"], "dwd::dwd.dwd_demo::cnt")
+        self.assertEqual(row["src_sql"], "select 1")
+        self.assertEqual(row["dest_sql"], "select 2")
+
+    def test_submit_backlog_items_to_form_prefers_sheets_api(self):
+        module, _ = load_module()
+        backlog_item = module.candidate_to_backlog_item(self.make_candidate_result(), detected_at="2026-06-04 12:00:00")
+        form_config = {
+            **module.QUALITY_RULE_FORM_CONFIG,
+            "confirmation_spreadsheet_id": "sheet-id",
+            "confirmation_sheet_gid": "1",
+            "confirmation_google_service_account_json": '{"type":"service_account"}',
+            "confirmation_write_mode": "auto",
+        }
+
+        with mock.patch.object(module, "append_confirmation_row_via_sheets_api", return_value={"ok": True, "mode": "sheets_api"}) as mocked_append, \
+             mock.patch.object(module, "submit_google_form") as mocked_form:
+            result = module.submit_backlog_items_to_form([backlog_item], form_config=form_config, dry_run=False)
+
+        self.assertEqual(result["submitted"], 1)
+        self.assertEqual(result["results"][0]["mode"], "sheets_api")
+        mocked_append.assert_called_once()
+        mocked_form.assert_not_called()
+
+    def test_submit_backlog_items_to_form_falls_back_to_form_when_sheets_api_fails(self):
+        module, _ = load_module()
+        backlog_item = module.candidate_to_backlog_item(self.make_candidate_result(), detected_at="2026-06-04 12:00:00")
+        form_config = {
+            **module.QUALITY_RULE_FORM_CONFIG,
+            "confirmation_spreadsheet_id": "sheet-id",
+            "confirmation_sheet_gid": "1",
+            "confirmation_google_service_account_json": '{"type":"service_account"}',
+            "confirmation_write_mode": "auto",
+        }
+
+        with mock.patch.object(module, "append_confirmation_row_via_sheets_api", return_value={"ok": False, "mode": "sheets_api", "error": "timeout"}) as mocked_append, \
+             mock.patch.object(module, "submit_google_form", return_value={"ok": True, "status": 200}) as mocked_form:
+            result = module.submit_backlog_items_to_form([backlog_item], form_config=form_config, dry_run=False)
+
+        self.assertEqual(result["submitted"], 1)
+        mocked_append.assert_called_once()
+        mocked_form.assert_called_once()
+
     def test_get_pending_form_submission_items_returns_unsubmitted_pending_items(self):
         module, _ = load_module()
         pending_item = module.candidate_to_backlog_item(self.make_candidate_result(), detected_at="2026-06-04 12:00:00")

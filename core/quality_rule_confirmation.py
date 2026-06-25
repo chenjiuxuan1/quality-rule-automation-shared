@@ -323,6 +323,138 @@ def build_form_payload(payload, field_map, hidden=None, required_fields=None):
     return form
 
 
+def _load_google_sheet_service(form_config):
+    credentials_json = (form_config.get("confirmation_google_service_account_json") or "").strip()
+    credentials_file = (form_config.get("confirmation_google_service_account_file") or "").strip()
+    if not credentials_json and not credentials_file:
+        raise ValueError("google_credentials_missing")
+
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+    except Exception as exc:
+        raise RuntimeError(f"google_client_library_missing: {exc}") from exc
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    if credentials_json:
+        credentials_info = json.loads(credentials_json)
+        credentials = service_account.Credentials.from_service_account_info(credentials_info, scopes=scopes)
+    else:
+        credentials = service_account.Credentials.from_service_account_file(credentials_file, scopes=scopes)
+    return build("sheets", "v4", credentials=credentials, cache_discovery=False)
+
+
+def _resolve_confirmation_sheet_target(form_config):
+    spreadsheet_id = (
+        (form_config.get("confirmation_spreadsheet_id") or "").strip()
+        or _extract_spreadsheet_id_from_url(form_config.get("confirmation_sheet_url", ""))
+        or _extract_spreadsheet_id_from_url(form_config.get("confirmation_export_url", ""))
+    )
+    sheet_gid_text = (
+        (form_config.get("confirmation_sheet_gid") or "").strip()
+        or _extract_sheet_gid_from_url(form_config.get("confirmation_sheet_url", ""))
+        or _extract_sheet_gid_from_url(form_config.get("confirmation_export_url", ""))
+    )
+    if not spreadsheet_id or not sheet_gid_text:
+        raise ValueError("sheet_config_incomplete")
+    try:
+        sheet_gid = int(sheet_gid_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("invalid_sheet_gid") from exc
+    return spreadsheet_id, sheet_gid
+
+
+def _fetch_confirmation_sheet_title_and_headers(service, spreadsheet_id, sheet_gid):
+    metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheets = metadata.get("sheets", [])
+    target_title = ""
+    for sheet in sheets:
+        properties = sheet.get("properties", {})
+        if properties.get("sheetId") == sheet_gid:
+            target_title = properties.get("title", "")
+            break
+    if not target_title:
+        raise ValueError(f"sheet_gid_not_found: {sheet_gid}")
+
+    header_resp = (
+        service.spreadsheets()
+        .values()
+        .get(spreadsheetId=spreadsheet_id, range=f"'{target_title}'!1:1")
+        .execute()
+    )
+    header_values = ((header_resp.get("values") or [[]])[0]) if header_resp else []
+    headers = [str(item).strip() for item in header_values]
+    if not headers:
+        raise ValueError("sheet_header_empty")
+    return target_title, headers
+
+
+def build_confirmation_sheet_row(payload, form_config=None, submitted_at=None):
+    form_config = form_config or QUALITY_RULE_FORM_CONFIG
+    column_map = form_config.get("confirmation_column_map") or {}
+    row_data = {
+        column_map.get("submitted_at", "时间"): submitted_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        column_map.get("country", "国家"): payload.get("country", ""),
+        column_map.get("database", "数据库"): payload.get("database", ""),
+        column_map.get("tbl", "表名"): payload.get("tbl", ""),
+        column_map.get("auto_generate", "是否需要自动生成"): payload.get("auto_generate", payload.get("need_apply", "1")),
+        column_map.get("metric_field", "需要校验的内容字段"): payload.get("metric_field", ""),
+        column_map.get("candidate_key", "唯一键"): payload.get("candidate_key", ""),
+        column_map.get("src_sql", "src_sql"): payload.get("src_sql", ""),
+        column_map.get("dest_sql", "dest_sql"): payload.get("dest_sql", ""),
+        column_map.get("human_check", "human_check"): payload.get("human_check", "0"),
+        column_map.get("need_apply", "是否上线"): payload.get("need_apply", ""),
+        column_map.get("operator", "operator"): payload.get("operator", payload.get("submitter", "")),
+        column_map.get("notes", "notes"): payload.get("notes", ""),
+    }
+    return row_data
+
+
+def append_confirmation_row_via_sheets_api(payload, form_config=None, dry_run=False):
+    form_config = form_config or QUALITY_RULE_FORM_CONFIG
+    submitted_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row_dict = build_confirmation_sheet_row(payload, form_config=form_config, submitted_at=submitted_at)
+
+    if dry_run:
+        return {"ok": True, "dry_run": True, "payload": row_dict, "mode": "sheets_api"}
+
+    try:
+        spreadsheet_id, sheet_gid = _resolve_confirmation_sheet_target(form_config)
+        service = _load_google_sheet_service(form_config)
+        sheet_title, headers = _fetch_confirmation_sheet_title_and_headers(service, spreadsheet_id, sheet_gid)
+        row_values = [str(row_dict.get(header, "")) for header in headers]
+        response = (
+            service.spreadsheets()
+            .values()
+            .append(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{sheet_title}'!A:A",
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body={"values": [row_values]},
+            )
+            .execute()
+        )
+        return {
+            "ok": True,
+            "mode": "sheets_api",
+            "spreadsheet_id": spreadsheet_id,
+            "sheet_gid": sheet_gid,
+            "updated_range": response.get("updates", {}).get("updatedRange", ""),
+            "updated_rows": response.get("updates", {}).get("updatedRows", 0),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "mode": "sheets_api",
+            "status": None,
+            "matched_success_text": False,
+            "matched_confirm_hint": False,
+            "body_preview": "",
+            "error": f"sheets_api_append_failed: {exc}",
+        }
+
+
 def submit_google_form(view_url, post_url, field_map, payload, required_fields=None, dry_run=False):
     try:
         html_text = fetch_viewform(view_url)
@@ -440,21 +572,31 @@ def submit_backlog_items_to_form(backlog_items, form_config=None, dry_run=False)
     post_url = form_config.get("post_url")
     field_map = form_config.get("field_map") or {}
     required_fields = form_config.get("required_fields") or []
-    if not view_url or not post_url or not field_map:
+    write_mode = (form_config.get("confirmation_write_mode") or os.environ.get("QUALITY_RULE_CONFIRMATION_WRITE_MODE") or "auto").strip().lower()
+    if write_mode not in {"auto", "form", "sheets_api"}:
+        write_mode = "auto"
+    if write_mode == "form" and (not view_url or not post_url or not field_map):
         return {"submitted": 0, "results": [], "skipped": True, "reason": "form_config_incomplete"}
 
     results = []
     submitted = 0
     for item in backlog_items:
         payload = build_detection_form_payload(item)
-        result = submit_google_form(
-            view_url,
-            post_url,
-            field_map,
-            payload,
-            required_fields=required_fields,
-            dry_run=dry_run,
-        )
+        result = None
+        if write_mode in {"auto", "sheets_api"}:
+            result = append_confirmation_row_via_sheets_api(payload, form_config=form_config, dry_run=dry_run)
+        if (not result or not result.get("ok")) and write_mode in {"auto", "form"}:
+            if view_url and post_url and field_map:
+                result = submit_google_form(
+                    view_url,
+                    post_url,
+                    field_map,
+                    payload,
+                    required_fields=required_fields,
+                    dry_run=dry_run,
+                )
+            elif result is None:
+                result = {"ok": False, "error": "form_config_incomplete", "status": None}
         result["candidate_key"] = item["candidate_key"]
         results.append(result)
         if result.get("ok"):
@@ -468,21 +610,31 @@ def submit_disable_auto_generate_items_to_form(items, form_config=None, dry_run=
     post_url = form_config.get("post_url")
     field_map = form_config.get("field_map") or {}
     required_fields = form_config.get("required_fields") or []
-    if not view_url or not post_url or not field_map:
+    write_mode = (form_config.get("confirmation_write_mode") or os.environ.get("QUALITY_RULE_CONFIRMATION_WRITE_MODE") or "auto").strip().lower()
+    if write_mode not in {"auto", "form", "sheets_api"}:
+        write_mode = "auto"
+    if write_mode == "form" and (not view_url or not post_url or not field_map):
         return {"submitted": 0, "results": [], "skipped": True, "reason": "form_config_incomplete"}
 
     results = []
     submitted = 0
     for item in items:
         payload = build_disable_auto_generate_form_payload(item)
-        result = submit_google_form(
-            view_url,
-            post_url,
-            field_map,
-            payload,
-            required_fields=required_fields,
-            dry_run=dry_run,
-        )
+        result = None
+        if write_mode in {"auto", "sheets_api"}:
+            result = append_confirmation_row_via_sheets_api(payload, form_config=form_config, dry_run=dry_run)
+        if (not result or not result.get("ok")) and write_mode in {"auto", "form"}:
+            if view_url and post_url and field_map:
+                result = submit_google_form(
+                    view_url,
+                    post_url,
+                    field_map,
+                    payload,
+                    required_fields=required_fields,
+                    dry_run=dry_run,
+                )
+            elif result is None:
+                result = {"ok": False, "error": "form_config_incomplete", "status": None}
         result["candidate_key"] = item.get("candidate_key", "")
         results.append(result)
         if result.get("ok"):
