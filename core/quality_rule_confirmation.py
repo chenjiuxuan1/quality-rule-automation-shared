@@ -324,9 +324,30 @@ def build_form_payload(payload, field_map, hidden=None, required_fields=None):
 
 
 def submit_google_form(view_url, post_url, field_map, payload, required_fields=None, dry_run=False):
-    html_text = fetch_viewform(view_url)
-    hidden = extract_hidden_fields(html_text)
-    form_payload = build_form_payload(payload, field_map, hidden=hidden, required_fields=required_fields)
+    try:
+        html_text = fetch_viewform(view_url)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": None,
+            "matched_success_text": False,
+            "matched_confirm_hint": False,
+            "body_preview": "",
+            "error": f"viewform_fetch_failed: {exc}",
+        }
+
+    try:
+        hidden = extract_hidden_fields(html_text)
+        form_payload = build_form_payload(payload, field_map, hidden=hidden, required_fields=required_fields)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": None,
+            "matched_success_text": False,
+            "matched_confirm_hint": False,
+            "body_preview": "",
+            "error": f"build_form_payload_failed: {exc}",
+        }
 
     if dry_run:
         return {"ok": True, "dry_run": True, "payload": form_payload}

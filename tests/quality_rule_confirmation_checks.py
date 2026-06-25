@@ -302,6 +302,50 @@ class QualityRuleConfirmationTests(unittest.TestCase):
         self.assertEqual(result["status"], 400)
         self.assertIn("bad request body", result["body_preview"])
 
+    def test_submit_google_form_returns_structured_failure_on_viewform_fetch_error(self):
+        module, _ = load_module()
+
+        with mock.patch.object(module, "fetch_viewform", side_effect=urllib.error.URLError("timed out")):
+            result = module.submit_google_form(
+                "https://docs.google.com/forms/d/e/test/viewform",
+                "https://docs.google.com/forms/d/e/test/formResponse",
+                module.QUALITY_RULE_FORM_CONFIG["field_map"],
+                {
+                    "candidate_key": "dwd::a::cnt",
+                    "country": "ph",
+                    "database": "dwd",
+                    "tbl": "a",
+                    "need_apply": "1",
+                },
+                required_fields=["candidate_key", "country", "database", "tbl", "need_apply"],
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], None)
+        self.assertIn("viewform_fetch_failed", result["error"])
+
+    def test_submit_google_form_returns_structured_failure_on_payload_build_error(self):
+        module, _ = load_module()
+
+        with mock.patch.object(module, "fetch_viewform", return_value="<html></html>"):
+            with mock.patch.object(module, "extract_hidden_fields", return_value={}):
+                result = module.submit_google_form(
+                    "https://docs.google.com/forms/d/e/test/viewform",
+                    "https://docs.google.com/forms/d/e/test/formResponse",
+                    module.QUALITY_RULE_FORM_CONFIG["field_map"],
+                    {
+                        "candidate_key": "dwd::a::cnt",
+                        "country": "ph",
+                        "database": "dwd",
+                        "tbl": "a",
+                    },
+                    required_fields=["candidate_key", "country", "database", "tbl", "need_apply"],
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], None)
+        self.assertIn("build_form_payload_failed", result["error"])
+
     def test_get_pending_form_submission_items_returns_unsubmitted_pending_items(self):
         module, _ = load_module()
         pending_item = module.candidate_to_backlog_item(self.make_candidate_result(), detected_at="2026-06-04 12:00:00")
