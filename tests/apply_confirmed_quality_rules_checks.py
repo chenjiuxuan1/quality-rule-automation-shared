@@ -400,6 +400,67 @@ class ApplyConfirmedQualityRulesTests(unittest.TestCase):
         fake_confirmation.update_backlog_with_decisions.assert_called_once_with({"items": {}}, [])
         fake_gap.apply_candidates.assert_called_once_with([])
 
+    def test_main_skips_tv_summary_when_notify_bot_missing(self):
+        module, fake_confirmation, fake_gap = load_module()
+        module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"] = ""
+
+        decision_rows = [
+            {
+                "candidate_key": "dwd::dwd.demo::cnt",
+                "database": "dwd",
+                "tbl": "demo",
+                "need_apply": "1",
+                "human_check": "1",
+                "src_sql": "select 1",
+                "dest_sql": "select 2",
+                "operator": "me",
+                "notes": "",
+                "submitted_at": "2026-06-08 12:00:00",
+            }
+        ]
+        payload_b64 = base64.b64encode(json.dumps(decision_rows, ensure_ascii=False).encode("utf-8")).decode("utf-8")
+
+        fake_confirmation.load_backlog.return_value = {
+            "items": {
+                "dwd::dwd.demo::cnt": {
+                    "candidate_key": "dwd::dwd.demo::cnt",
+                    "country": "ph",
+                    "database": "dwd",
+                    "dest_db": "dwd",
+                    "dest_tbl": "demo",
+                    "rule_name": "cnt",
+                    "src_db": "ods",
+                    "src_tbl": "demo",
+                    "src_sql": "select old",
+                    "dest_sql": "select old2",
+                    "status": "pending_confirmation",
+                    "applied_at": "",
+                }
+            }
+        }
+        fake_confirmation.update_backlog_with_decisions.return_value = (
+            [{**fake_confirmation.load_backlog.return_value["items"]["dwd::dwd.demo::cnt"], "status": "approved"}],
+            [],
+        )
+        fake_gap.apply_candidates.return_value = 1
+
+        argv_backup = sys.argv
+        stdout_backup = sys.stdout
+        sys.argv = ["apply_confirmed_quality_rules.py", "--decision-json-base64", payload_b64, "--json"]
+        buffer = io.StringIO()
+        sys.stdout = buffer
+        try:
+            exit_code = module.main()
+        finally:
+            sys.argv = argv_backup
+            sys.stdout = stdout_backup
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(buffer.getvalue())
+        self.assertTrue(payload["tv_result"]["success"])
+        self.assertTrue(payload["tv_result"]["skipped"])
+        self.assertEqual(payload["tv_result"]["reason"], "missing_notify_bot_id")
+
 
 if __name__ == "__main__":
     unittest.main()

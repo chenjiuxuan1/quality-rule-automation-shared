@@ -273,6 +273,9 @@ def format_tv_confirmation_message(new_items, confirmation_sheet_url=""):
 def notify_new_candidates_via_tv(new_items, mentions=None, confirmation_sheet_url=None):
     if not new_items:
         return {"success": True, "skipped": True, "reason": "no_new_candidates"}
+    notify_bot_id = (QUALITY_RULE_FORM_CONFIG.get("notify_bot_id") or "").strip()
+    if not notify_bot_id:
+        return {"success": True, "skipped": True, "reason": "missing_notify_bot_id"}
     message = format_tv_confirmation_message(
         new_items,
         confirmation_sheet_url=confirmation_sheet_url or QUALITY_RULE_FORM_CONFIG.get("confirmation_sheet_url", ""),
@@ -280,7 +283,7 @@ def notify_new_candidates_via_tv(new_items, mentions=None, confirmation_sheet_ur
     return send_tv_report(
         message,
         mentions=mentions or QUALITY_RULE_FORM_CONFIG.get("notify_mentions", []),
-        bot_id=QUALITY_RULE_FORM_CONFIG.get("notify_bot_id"),
+        bot_id=notify_bot_id,
     )
 
 

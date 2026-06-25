@@ -200,12 +200,16 @@ def main():
         confirmation_sheet_url=QUALITY_RULE_FORM_CONFIG.get("confirmation_sheet_url", ""),
     )
     if applied_items or disabled_items or validation_failed:
-        from core.send_tv_report import send_tv_report
-        tv_result = send_tv_report(
-            summary_message,
-            mentions=QUALITY_RULE_FORM_CONFIG.get("notify_mentions", []),
-            bot_id=QUALITY_RULE_FORM_CONFIG.get("notify_bot_id"),
-        )
+        notify_bot_id = (QUALITY_RULE_FORM_CONFIG.get("notify_bot_id") or "").strip()
+        if not notify_bot_id:
+            tv_result = {"success": True, "skipped": True, "reason": "missing_notify_bot_id"}
+        else:
+            from core.send_tv_report import send_tv_report
+            tv_result = send_tv_report(
+                summary_message,
+                mentions=QUALITY_RULE_FORM_CONFIG.get("notify_mentions", []),
+                bot_id=notify_bot_id,
+            )
 
     payload = {
         "approved_candidates": len(approved_items),

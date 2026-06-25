@@ -425,6 +425,18 @@ class QualityRuleConfirmationTests(unittest.TestCase):
         self.assertEqual(kwargs["mentions"], ["owner@example.com"])
         self.assertEqual(kwargs["bot_id"], "quality-test-bot")
 
+    def test_notify_new_candidates_via_tv_skips_when_notify_bot_missing(self):
+        module, fake_send_tv = load_module()
+        module.QUALITY_RULE_FORM_CONFIG["notify_bot_id"] = ""
+        backlog_item = module.candidate_to_backlog_item(self.make_candidate_result(), detected_at="2026-06-04 12:00:00")
+
+        result = module.notify_new_candidates_via_tv([backlog_item])
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "missing_notify_bot_id")
+        fake_send_tv.send_tv_report.assert_not_called()
+
     def test_parse_confirmation_rows_maps_csv_headers(self):
         module, _ = load_module()
         csv_text = "Timestamp,submission_type,candidate_key,country,database,tbl,need_apply,src_sql,dest_sql,human_check,operator,notes\n2026-06-04 18:00:00,decision,dwd::dwd.dwd_user_member_log::cnt,ph,dwd,dwd_user_member_log,1,select 1,select 2,1,alice,ok\n"

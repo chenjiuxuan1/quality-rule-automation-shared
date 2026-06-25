@@ -302,7 +302,10 @@ QUALITY_RULE_FORM_CONFIG = {
             ),
         )
     ),
-    "notify_bot_id": _get_env("QUALITY_RULE_NOTIFY_BOT_ID", TV_CONFIG["bot_id"]),
+    "notify_bot_id": _get_env(
+        "QUALITY_RULE_NOTIFY_BOT_ID",
+        os.environ.get("TV_BOT_ID", ""),
+    ),
     "notify_mentions": [
         item.strip()
         for item in _get_env("QUALITY_RULE_NOTIFY_MENTIONS", "").split(",")
