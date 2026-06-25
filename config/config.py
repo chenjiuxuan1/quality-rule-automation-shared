@@ -286,13 +286,17 @@ QUALITY_RULE_FORM_CONFIG = {
         "QUALITY_RULE_CONFIRMATION_SHEET_GID",
         "683783947",
     ),
+    "confirmation_write_mode": _get_env(
+        "QUALITY_RULE_CONFIRMATION_WRITE_MODE",
+        "sheets_api",
+    ),
     "confirmation_google_service_account_json": _get_env(
         "QUALITY_RULE_CONFIRMATION_GOOGLE_SERVICE_ACCOUNT_JSON",
         "",
     ),
     "confirmation_google_service_account_file": _get_env(
         "QUALITY_RULE_CONFIRMATION_GOOGLE_SERVICE_ACCOUNT_FILE",
-        "",
+        "/root/quality-rule-confirmation-service-account.json",
     ),
     "confirmation_column_map": json.loads(
         _get_env(
