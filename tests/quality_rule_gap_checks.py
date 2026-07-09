@@ -1915,6 +1915,25 @@ WHERE created_at >= '{begin}' AND created_at < '{end}'""",
 
         self.assertEqual(results, set())
 
+    def test_load_recent_missing_rule_alert_table_names_does_not_depend_on_alert_status(self):
+        fake_cursor = FakeCursor(
+            [[
+                {"content": "【告警内容】指标校验异常 dwd_app_diversion_order 总数 校验规则自动获取失败,请手动添加!"},
+                {"content": "【告警内容】指标校验异常 dwd_user_member_log 总数 校验规则自动获取失败,请手动添加!"},
+            ]]
+        )
+        module = load_module()
+
+        results = module.load_recent_missing_rule_alert_table_names(fake_cursor)
+
+        self.assertEqual(results, {"dwd_app_diversion_order", "dwd_user_member_log"})
+        executed_sql, executed_params = fake_cursor.executed[0]
+        self.assertNotIn("status = 0", executed_sql)
+        self.assertEqual(
+            executed_params,
+            ("%校验规则自动获取失败%", "%校验规则源数据库未获取到%", "%请手动添加%"),
+        )
+
     def test_main_json_output_serializes_datetime_values(self):
         module = load_module()
         fake_results = [

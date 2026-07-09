@@ -1351,8 +1351,7 @@ def load_recent_missing_rule_alert_table_names(cursor):
     sql = f"""
         SELECT content
         FROM {TABLE_CONFIG['quality_alert_table']}
-        WHERE status = 0
-          AND created_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
+        WHERE created_at >= DATE_SUB(NOW(), INTERVAL 3 DAY)
           AND (
                 content LIKE %s
                 OR content LIKE %s
