@@ -80,12 +80,13 @@ class FakeConnection:
 
 
 class QualityRuleGapScannerTests(unittest.TestCase):
-    def test_dwb_is_supported_as_count_rule_database(self):
+    def test_dwb_is_supported_as_wide_table_metric_database(self):
         module = load_module()
 
-        self.assertIn("dwb", module.COUNT_RULE_DATABASES)
+        self.assertNotIn("dwb", module.COUNT_RULE_DATABASES)
+        self.assertIn("dwb", module.WIDE_TABLE_DATABASES)
         self.assertIn("dwb", module.SUPPORTED_DATABASES)
-        self.assertEqual(module.resolve_rule_name("dwb"), "cnt")
+        self.assertEqual(module.resolve_rule_name("dwb"), "metric")
 
     def test_unknown_database_defaults_to_count_rule(self):
         module = load_module()
@@ -129,6 +130,120 @@ class QualityRuleGapScannerTests(unittest.TestCase):
         self.assertEqual(result["check_field"], "created_at")
         self.assertEqual(result["src_sql"], "select 1")
         self.assertEqual(result["dest_sql"], "select 2")
+
+    def test_build_wide_table_metric_candidate_returns_existing_when_any_rule_present(self):
+        module = load_module()
+        table = {"db": "dwb", "tbl": "dwb_asset_metric"}
+        rule_map = {
+            "dwb_asset_metric": {
+                "sum_amount": {
+                    "name": "sum_amount",
+                    "dest_db": "dwb",
+                    "dest_tbl": "dwb_asset_metric",
+                    "src_db": "dwd",
+                    "src_tbl": "dwd_asset_metric",
+                    "check_field": "biz_date",
+                    "src_sql": "select sum(amount) from src",
+                    "dest_sql": "select sum(amount) from dest",
+                }
+            }
+        }
+
+        result = module.build_wide_table_metric_candidate("dwb", table, rule_map)
+
+        self.assertEqual(result["status"], "existing")
+        self.assertEqual(result["rule_name"], "sum_amount")
+        self.assertEqual(result["reason"], "已存在相关校验规则")
+
+    def test_build_wide_table_metric_candidate_rejects_count_candidate_and_blocks(self):
+        module = load_module()
+        table = {"db": "dwb", "tbl": "dwb_asset_metric"}
+        ai_candidates = [
+            (
+                {
+                    "name": "cnt",
+                    "src_db": "dwd",
+                    "src_tbl": "dwd_asset_metric",
+                    "dest_db": "dwb",
+                    "dest_tbl": "dwb_asset_metric",
+                    "src_sql": "SELECT COUNT(*) AS cnt FROM dwd.dwd_asset_metric",
+                    "dest_sql": "SELECT COUNT(*) AS cnt FROM dwb.dwb_asset_metric",
+                },
+                {"status": "ok", "reason": "", "git_matches": [], "attempted": True},
+            ),
+            (
+                {
+                    "name": "cnt",
+                    "src_db": "dwd",
+                    "src_tbl": "dwd_asset_metric",
+                    "dest_db": "dwb",
+                    "dest_tbl": "dwb_asset_metric",
+                    "src_sql": "SELECT COUNT(*) AS cnt FROM dwd.dwd_asset_metric",
+                    "dest_sql": "SELECT COUNT(*) AS cnt FROM dwb.dwb_asset_metric",
+                },
+                {"status": "ok", "reason": "", "git_matches": [], "attempted": True},
+            ),
+        ]
+
+        with mock.patch.object(module, "call_ai_candidate", side_effect=ai_candidates):
+            result = module.build_wide_table_metric_candidate("dwb", table, {})
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["rule_name"], "metric")
+        self.assertIn("指标级", result["reason"])
+        self.assertEqual(result["ai_status"], "ok")
+
+    def test_list_pending_generation_tables_routes_dwb_to_metric_builder(self):
+        fake_cursor = FakeCursor(
+            [
+                [
+                    {"content": "指标校验异常 dwb_asset_metric 总数 校验规则自动获取失败,请手动添加!"},
+                ],
+                [
+                    {
+                        "id": 1,
+                        "db": "dwb",
+                        "tbl": "dwb_asset_metric",
+                        "dep_tbls": json.dumps(["dwd_asset_metric"]),
+                        "increment_field": "biz_date",
+                        "check_field": "",
+                        "monitor_level": 2,
+                        "is_auto_check": 1,
+                    },
+                ],
+                [{"table_name": "wattrel_quality_setting"}],
+                [],
+            ]
+        )
+        fake_conn = FakeConnection(fake_cursor)
+        module = load_module(fake_get_db_connection=mock.MagicMock(return_value=fake_conn))
+
+        with mock.patch.object(
+            module,
+            "build_wide_table_metric_candidate",
+            return_value={
+                "status": "candidate",
+                "rule_name": "sum_amount",
+                "dest_db": "dwb",
+            },
+        ) as build_wide_table_metric_candidate:
+            results = module.list_pending_generation_tables(databases=["dwb"])
+
+        build_wide_table_metric_candidate.assert_called_once()
+        self.assertEqual(
+            results,
+            [
+                {
+                    "database": "dwb",
+                    "tbl": "dwb_asset_metric",
+                    "dest_db": "dwb",
+                    "rule_name": "sum_amount",
+                    "status": "pending_generation",
+                    "reason": "告警库缺少该表相关校验语句，待进入自动生成",
+                    "monitor_level": 2,
+                }
+            ],
+        )
 
     def test_build_count_rule_candidate_returns_existing_when_requested_metric_matches_existing_rule(self):
         module = load_module()

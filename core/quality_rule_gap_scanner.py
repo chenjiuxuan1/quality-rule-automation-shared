@@ -32,20 +32,23 @@ from core.quality_rule_ai_helper import generate_rule_candidate_with_ai
 COUNT_RULE_DATABASES = (
     "ods",
     "dwd",
-    "dwb",
     "dim",
     "ods_security",
     "dwd_paimon",
     "dim_sec",
     "dwd_sec",
 )
+WIDE_TABLE_DATABASES = (
+    "dwb",
+)
 EXISTS_RULE_DATABASES = (
     "ads",
     "ads_sec",
 )
-SUPPORTED_DATABASES = COUNT_RULE_DATABASES + EXISTS_RULE_DATABASES
+SUPPORTED_DATABASES = COUNT_RULE_DATABASES + WIDE_TABLE_DATABASES + EXISTS_RULE_DATABASES
 
 COUNT_RULE_NAME = "cnt"
+WIDE_TABLE_RULE_NAME = "metric"
 EXISTS_RULE_NAME = "if_exists"
 COUNT_MSG_TEMPLATE = "{dest_tbl} 数量不一致  期望值 {src_value}  实际值{dest_value}  差值为 {diff}"
 EXISTS_MSG_TEMPLATE = "{dest_tbl} 昨日缺失数据"
@@ -81,6 +84,8 @@ SAFE_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def resolve_rule_name(database_name):
+    if database_name in WIDE_TABLE_DATABASES:
+        return WIDE_TABLE_RULE_NAME
     return EXISTS_RULE_NAME if database_name in EXISTS_RULE_DATABASES else COUNT_RULE_NAME
 
 
@@ -616,6 +621,116 @@ def build_requested_metric_candidate_with_ai(
         ai_meta,
         f"确认表指定字段 {metric_field}，但 AI 未能生成对应校验 SQL",
         fallback={"check_field": ai_table.get("check_field") or ""},
+    )
+
+
+def build_wide_table_metric_candidate(
+    database_name,
+    table,
+    rule_map,
+    git_roots=None,
+    cursor=None,
+    requested_metric_field=None,
+):
+    target_table = table["tbl"]
+    target_db = table.get("db") or database_name
+    requested_metric_field = normalize_requested_metric_field(
+        requested_metric_field or table.get("requested_metric_field")
+    )
+
+    existing_rule = first_existing_rule(rule_map, target_table)
+    if existing_rule:
+        return {
+            "status": "existing",
+            "rule_name": existing_rule.get("name") or WIDE_TABLE_RULE_NAME,
+            "dest_tbl": target_table,
+            "dest_db": existing_rule.get("dest_db") or target_db,
+            "src_db": existing_rule.get("src_db", ""),
+            "src_tbl": existing_rule.get("src_tbl", ""),
+            "check_field": existing_rule.get("check_field") or "",
+            "requested_metric_field": normalize_requested_metric_field(
+                requested_metric_field or existing_rule.get("requested_metric_field")
+            ),
+            "src_sql": existing_rule.get("src_sql", ""),
+            "dest_sql": existing_rule.get("dest_sql", ""),
+            "reason": "已存在相关校验规则",
+            "rule": existing_rule,
+        }
+
+    ai_table = enrich_ai_schema_context(
+        {
+            **table,
+            "dest_tbl": target_table,
+            "dest_db": target_db,
+        },
+        cursor=cursor,
+    )
+    if requested_metric_field:
+        ai_table["requested_metric_field"] = requested_metric_field
+
+    ai_reason = (
+        "dwb 宽表缺少指标级校验规则。"
+        "请至少生成一条可比较的单指标校验 SQL，优先围绕金额、笔数、订单数、用户数、余额、利息、费用、状态分布等业务指标。"
+        "不要回退到默认 count(*) 总数校验，也不要生成 if_exists。"
+        "如果宽表存在去重、聚合、窗口或派生口径，请保持源表与目标表的业务口径一致。"
+    )
+    if requested_metric_field:
+        ai_reason += f" 确认表指定字段为 {requested_metric_field}，请优先围绕该字段生成指标级规则。"
+
+    ai_candidate, ai_meta = call_ai_candidate(
+        database_name,
+        ai_table,
+        ai_reason,
+        git_roots=git_roots,
+    )
+    accepted_candidate = ai_candidate
+    accepted_meta = ai_meta
+    if accepted_candidate and infer_existing_rule_kind(accepted_candidate) != "metric":
+        retry_reason = (
+            ai_reason
+            + " 上一版错误返回了 count/if_exists 规则；本次必须输出指标级校验规则，否则返回不可自动生成。"
+        )
+        retry_candidate, retry_meta = call_ai_candidate(
+            database_name,
+            ai_table,
+            retry_reason,
+            git_roots=git_roots,
+        )
+        accepted_candidate = retry_candidate
+        accepted_meta = retry_meta
+        if retry_candidate and infer_existing_rule_kind(retry_candidate) != "metric":
+            accepted_meta = dict(retry_meta or {})
+            accepted_meta["draft_candidate"] = retry_candidate
+            accepted_candidate = None
+        elif retry_candidate:
+            accepted_meta = retry_meta
+        else:
+            accepted_meta = retry_meta
+
+    if accepted_candidate and infer_existing_rule_kind(accepted_candidate) == "metric":
+        return finalize_candidate_with_validation(
+            database_name,
+            target_table,
+            accepted_candidate.get("dest_db") or target_db,
+            accepted_candidate,
+            ai_table,
+            git_roots=git_roots,
+            cursor=cursor,
+            base_reason="dwb 宽表按指标级规则自动生成",
+            ai_status=(accepted_meta or {}).get("status", ""),
+        )
+
+    fallback_reason = "dwb 宽表缺少指标级校验规则，AI 未能生成符合要求的指标级 SQL"
+    if ai_candidate and infer_existing_rule_kind(ai_candidate) != "metric":
+        fallback_reason += "（返回了 count/if_exists，不符合 dwb 宽表要求）"
+    return blocked_result_with_ai_draft(
+        ai_table,
+        target_table,
+        target_db,
+        accepted_meta or ai_meta,
+        fallback_reason,
+        fallback={"check_field": ai_table.get("check_field") or ""},
+        rule_name=WIDE_TABLE_RULE_NAME,
     )
 
 
@@ -1413,6 +1528,13 @@ def list_pending_generation_tables(databases=None, monitor_level=None):
                         continue
                     if database_name in EXISTS_RULE_DATABASES:
                         scan_result = build_exists_rule_candidate(
+                            database_name,
+                            table,
+                            rule_map,
+                            cursor=cursor,
+                        )
+                    elif database_name in WIDE_TABLE_DATABASES:
+                        scan_result = build_wide_table_metric_candidate(
                             database_name,
                             table,
                             rule_map,
