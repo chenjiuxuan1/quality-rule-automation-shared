@@ -598,6 +598,7 @@ def submit_backlog_items_to_form(backlog_items, form_config=None, dry_run=False)
             elif result is None:
                 result = {"ok": False, "error": "form_config_incomplete", "status": None}
         result["candidate_key"] = item["candidate_key"]
+        result["submission_payload"] = payload
         results.append(result)
         if result.get("ok"):
             submitted += 1
@@ -636,6 +637,7 @@ def submit_disable_auto_generate_items_to_form(items, form_config=None, dry_run=
             elif result is None:
                 result = {"ok": False, "error": "form_config_incomplete", "status": None}
         result["candidate_key"] = item.get("candidate_key", "")
+        result["submission_payload"] = payload
         results.append(result)
         if result.get("ok"):
             submitted += 1

@@ -408,6 +408,7 @@ class QualityRuleConfirmationTests(unittest.TestCase):
         mocked_append.assert_not_called()
         mocked_form.assert_called_once()
         self.assertEqual(result["results"][0]["mode"], "form")
+        self.assertEqual(result["results"][0]["submission_payload"]["candidate_key"], backlog_item["candidate_key"])
 
     def test_submit_backlog_items_to_form_falls_back_to_form_when_sheets_api_fails(self):
         module, _ = load_module()
@@ -427,6 +428,7 @@ class QualityRuleConfirmationTests(unittest.TestCase):
         self.assertEqual(result["submitted"], 1)
         mocked_append.assert_called_once()
         mocked_form.assert_called_once()
+        self.assertEqual(result["results"][0]["submission_payload"]["tbl"], backlog_item["dest_tbl"])
 
     def test_get_pending_form_submission_items_returns_unsubmitted_pending_items(self):
         module, _ = load_module()
