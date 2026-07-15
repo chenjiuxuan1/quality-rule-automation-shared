@@ -156,7 +156,7 @@ class CountryConfigTests(unittest.TestCase):
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["confirmation_column_map"]["metric_field"], "需要校验的内容字段")
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["confirmation_column_map"]["candidate_key"], "唯一键")
         self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["confirmation_column_map"]["submitted_at"], "时间")
-        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["confirmation_write_mode"], "sheets_api")
+        self.assertEqual(module.QUALITY_RULE_FORM_CONFIG["confirmation_write_mode"], "form")
         self.assertEqual(
             module.QUALITY_RULE_FORM_CONFIG["confirmation_google_service_account_file"],
             "/root/quality-rule-confirmation-service-account.json",
@@ -191,7 +191,7 @@ class CountryConfigTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             module = load_module()
 
-        self.assertEqual(module.QUALITY_RULE_VALIDATION_CONFIG["sr_token"], "")
+        self.assertEqual(module.QUALITY_RULE_VALIDATION_CONFIG["sr_token"], "fuxi_backend_query_all_20260518")
 
 
 if __name__ == "__main__":

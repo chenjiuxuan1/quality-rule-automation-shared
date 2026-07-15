@@ -288,7 +288,7 @@ QUALITY_RULE_FORM_CONFIG = {
     ),
     "confirmation_write_mode": _get_env(
         "QUALITY_RULE_CONFIRMATION_WRITE_MODE",
-        "sheets_api",
+        "form",
     ),
     "confirmation_google_service_account_json": _get_env(
         "QUALITY_RULE_CONFIRMATION_GOOGLE_SERVICE_ACCOUNT_JSON",

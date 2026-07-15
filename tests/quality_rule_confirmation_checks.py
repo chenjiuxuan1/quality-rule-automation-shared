@@ -33,6 +33,7 @@ def load_module():
         },
         "required_fields": ["submission_type", "candidate_key", "country", "database", "tbl", "need_apply"],
         "confirmation_export_url": "https://docs.google.com/spreadsheets/d/export?format=csv",
+        "confirmation_write_mode": "form",
         "confirmation_column_map": {
             "submission_type": "submission_type",
             "candidate_key": "candidate_key",
@@ -394,6 +395,19 @@ class QualityRuleConfirmationTests(unittest.TestCase):
         self.assertEqual(result["results"][0]["mode"], "sheets_api")
         mocked_append.assert_called_once()
         mocked_form.assert_not_called()
+
+    def test_submit_backlog_items_to_form_uses_google_form_by_default(self):
+        module, _ = load_module()
+        backlog_item = module.candidate_to_backlog_item(self.make_candidate_result(), detected_at="2026-06-04 12:00:00")
+
+        with mock.patch.object(module, "append_confirmation_row_via_sheets_api") as mocked_append, \
+             mock.patch.object(module, "submit_google_form", return_value={"ok": True, "status": 200, "mode": "form"}) as mocked_form:
+            result = module.submit_backlog_items_to_form([backlog_item], dry_run=False)
+
+        self.assertEqual(result["submitted"], 1)
+        mocked_append.assert_not_called()
+        mocked_form.assert_called_once()
+        self.assertEqual(result["results"][0]["mode"], "form")
 
     def test_submit_backlog_items_to_form_falls_back_to_form_when_sheets_api_fails(self):
         module, _ = load_module()
